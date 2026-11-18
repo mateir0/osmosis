@@ -1,0 +1,14 @@
+//! OSmosis Slice 1 — read-only Windows-profile scanner.
+//!
+//! The scanner reads files and writes ONLY `manifest.json` and `report.txt`
+//! inside the `--out` directory. It never modifies, moves, or deletes anything
+//! else, makes no network calls, and never panics on filesystem errors.
+
+pub mod classify;
+pub mod config;
+pub mod model;
+pub mod report;
+pub mod scan;
+
+pub use config::Config;
+pub use scan::{run_scan, ScanResult};

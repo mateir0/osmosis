@@ -1,0 +1,50 @@
+# OSmosis scanner configuration (Slice 1).
+#
+# Every key shown here is also the embedded default. Pass this file (or your own
+# edited copy) with `--config <file>`; any key you omit keeps its default value.
+#
+# NOTE: this file uses a restricted TOML subset (sections, "key" = "value" string
+# pairs, integers, and arrays of strings) so the scanner can parse it without
+# pulling in an extra TOML dependency crate.
+
+# Files at or below this size are hashed with xxh64. Larger KEEP files get
+# hash = null and hash_status = "deferred_large_file".
+# 256 MiB:
+hash_max_bytes = 268435456
+
+# (1) Explicit KEEP mappings: windows-relative prefix -> linux destination prefix.
+# Matched case-insensitively on path-component boundaries, longest prefix first.
+# ".ssh" is also listed under [sensitive_mappings] below.
+[keep_mappings]
+"Documents" = "~/Documents"
+"Desktop" = "~/Desktop"
+"Pictures" = "~/Pictures"
+"Videos" = "~/Videos"
+"Music" = "~/Music"
+"Downloads" = "~/Downloads"
+".ssh" = "~/.ssh"
+".gitconfig" = "~/.gitconfig"
+".minecraft/saves" = "~/.minecraft/saves"
+"AppData/Roaming/Code/User" = "~/.config/Code/User"
+
+# KEEP mappings whose entries are flagged sensitive = true in the manifest.
+[sensitive_mappings]
+prefixes = [".ssh"]
+
+# (2) RECREATE directory names (case-insensitive). A matching directory is NOT
+# descended into; it is recorded as ONE aggregate entry (path, total bytes, file
+# count) and pruned from the walk.
+[recreate_dirs]
+names = ["node_modules", ".next", ".turbo", ".cache", "target", "__pycache__", ".venv"]
+
+# (3) SKIP rules, evaluated after KEEP mappings and RECREATE pruning.
+[skip]
+# Everything under this top-level folder is skipped unless a KEEP mapping above
+# matched first (e.g. AppData/Roaming/Code/User).
+appdata_root = "AppData"
+# Exact file names to skip (case-insensitive).
+names = ["ntuser.ini", "thumbs.db", "desktop.ini"]
+# File-name prefixes to skip (case-insensitive), e.g. NTUSER.DAT, NTUSER.DAT.LOG1...
+prefix_names = ["ntuser.dat"]
+# File extensions to skip (case-insensitive, with leading dot).
+extensions = [".tmp", ".sys"]
