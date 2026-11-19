@@ -43,12 +43,37 @@ impl Config {
             ("Downloads", "~/Downloads"),
             (".ssh", "~/.ssh"),
             (".gitconfig", "~/.gitconfig"),
-            (".minecraft/saves", "~/.minecraft/saves"),
+            ("AppData/Roaming/.minecraft", "~/.minecraft"),
+            ("AppData/Roaming/.tlauncher", "~/.tlauncher"),
+            ("AppData/Roaming/.fastclient", "~/.fastclient"),
+            ("AppData/Roaming/FastClient", "~/.config/FastClient"),
+            (
+                "AppData/Roaming/Telegram Desktop",
+                "~/.local/share/TelegramDesktop",
+            ),
+            ("AppData/Roaming/Mozilla", "~/.mozilla"),
+            (
+                "AppData/Roaming/ai.opencode.desktop",
+                "~/.local/share/ai.opencode.desktop",
+            ),
+            (
+                "AppData/Roaming/Antigravity IDE/User",
+                "~/.config/Antigravity IDE/User",
+            ),
             ("AppData/Roaming/Code/User", "~/.config/Code/User"),
+            (
+                "AppData/Local/Google/Chrome/User Data/Default",
+                "~/.config/google-chrome/Default",
+            ),
         ];
         Config {
             keep_mappings: sorted_mappings(&mappings),
-            sensitive_prefixes: vec![".ssh".to_string()],
+            sensitive_prefixes: vec![
+                ".ssh".to_string(),
+                "appdata/roaming/telegram desktop".to_string(),
+                "appdata/roaming/mozilla".to_string(),
+                "appdata/local/google/chrome/user data/default".to_string(),
+            ],
             recreate_dirs: vec![
                 "node_modules",
                 ".next",
@@ -57,6 +82,8 @@ impl Config {
                 "target",
                 "__pycache__",
                 ".venv",
+                "dist",
+                "out",
             ]
             .into_iter()
             .map(String::from)
@@ -99,7 +126,8 @@ fn sorted_mappings_owned(mappings: &[(String, String)]) -> Vec<KeepMapping> {
             dest: d.clone(),
         })
         .collect();
-    // Longest prefix first so ".minecraft/saves" beats a hypothetical ".minecraft".
+    // Longest prefix first so "AppData/Local/Google/Chrome/User Data/Default"
+    // beats a hypothetical shorter "AppData/Local" mapping.
     v.sort_by_key(|m| std::cmp::Reverse(m.prefix_lower.len()));
     v
 }
@@ -263,7 +291,17 @@ mod tests {
             .keep_mappings
             .iter()
             .any(|m| m.prefix == "AppData/Roaming/Code/User"));
+        assert!(cfg
+            .keep_mappings
+            .iter()
+            .any(|m| m.prefix == "AppData/Roaming/.minecraft" && m.dest == "~/.minecraft"));
+        assert!(!cfg
+            .keep_mappings
+            .iter()
+            .any(|m| m.prefix == ".minecraft/saves"));
         assert!(cfg.recreate_dirs.contains(&"node_modules".to_string()));
+        assert!(cfg.recreate_dirs.contains(&"dist".to_string()));
+        assert!(cfg.recreate_dirs.contains(&"out".to_string()));
     }
 
     #[test]

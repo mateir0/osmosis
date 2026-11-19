@@ -24,18 +24,27 @@ hash_max_bytes = 268435456
 "Downloads" = "~/Downloads"
 ".ssh" = "~/.ssh"
 ".gitconfig" = "~/.gitconfig"
-".minecraft/saves" = "~/.minecraft/saves"
+"AppData/Roaming/.minecraft" = "~/.minecraft"
+"AppData/Roaming/.tlauncher" = "~/.tlauncher"
+"AppData/Roaming/.fastclient" = "~/.fastclient"
+"AppData/Roaming/FastClient" = "~/.config/FastClient"
+"AppData/Roaming/Telegram Desktop" = "~/.local/share/TelegramDesktop"
+"AppData/Roaming/Mozilla" = "~/.mozilla"
+"AppData/Roaming/ai.opencode.desktop" = "~/.local/share/ai.opencode.desktop"
+"AppData/Roaming/Antigravity IDE/User" = "~/.config/Antigravity IDE/User"
 "AppData/Roaming/Code/User" = "~/.config/Code/User"
+"AppData/Local/Google/Chrome/User Data/Default" = "~/.config/google-chrome/Default"
 
 # KEEP mappings whose entries are flagged sensitive = true in the manifest.
 [sensitive_mappings]
-prefixes = [".ssh"]
+prefixes = [".ssh", "AppData/Roaming/Telegram Desktop", "AppData/Roaming/Mozilla", "AppData/Local/Google/Chrome/User Data/Default"]
 
 # (2) RECREATE directory names (case-insensitive). A matching directory is NOT
 # descended into; it is recorded as ONE aggregate entry (path, total bytes, file
-# count) and pruned from the walk.
+# count) and pruned from the walk. Note: a `.git` directory is never RECREATE —
+# it is always aggregated as KEEP.
 [recreate_dirs]
-names = ["node_modules", ".next", ".turbo", ".cache", "target", "__pycache__", ".venv"]
+names = ["node_modules", ".next", ".turbo", ".cache", "target", "__pycache__", ".venv", "dist", "out"]
 
 # (3) SKIP rules, evaluated after KEEP mappings and RECREATE pruning.
 [skip]

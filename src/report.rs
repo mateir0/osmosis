@@ -87,14 +87,15 @@ pub fn build_summary(manifest: &Manifest, staging: Option<&Path>) -> String {
     }
     for r in attention {
         s.push_str(&format!(
-            "- {} (branch={}, dirty_files={}, unpushed={}, no_upstream={})\n",
+            "- {} (branch={}, dirty_files={}, unpushed={}, no_upstream={}, no_commits={})\n",
             r.path,
             r.branch.as_deref().unwrap_or("?"),
             r.dirty_files,
             r.unpushed
                 .map(|u| u.to_string())
                 .unwrap_or_else(|| "null".into()),
-            r.no_upstream
+            r.no_upstream,
+            r.no_commits
         ));
     }
     s.push('\n');

@@ -33,6 +33,17 @@ pub struct RecreateEntry {
     pub file_count: u64,
 }
 
+/// One aggregated KEEP directory (currently: a `.git` directory). The subtree
+/// is pruned from the walk and counted as KEEP in `totals`, never RECREATE/SKIP.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeepDirEntry {
+    pub path: String,
+    pub kind: String, // "git_dir"
+    pub size_bytes: u64,
+    pub file_count: u64,
+    pub linux_dest: String,
+}
+
 /// One detected git repository.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Repo {
@@ -42,6 +53,10 @@ pub struct Repo {
     pub dirty_files: u64,
     pub unpushed: Option<u64>,
     pub no_upstream: bool,
+    /// True when HEAD is unborn (zero commits). Additive field: omitted from
+    /// serialized output for normal repos, defaults to false when absent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_commits: bool,
 }
 
 /// One read error encountered during the scan. The scan always continues past these.
@@ -60,6 +75,7 @@ pub struct Manifest {
     pub totals: Totals,
     pub entries: Vec<Entry>,
     pub recreate: Vec<RecreateEntry>,
+    pub keep_dirs: Vec<KeepDirEntry>,
     pub repos: Vec<Repo>,
     pub errors: Vec<ScanError>,
 }

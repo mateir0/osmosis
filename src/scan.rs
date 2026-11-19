@@ -103,7 +103,20 @@ fn run_git(repo_path: &Path, args: &[&str]) -> io::Result<String> {
     }
 }
 
+/// Git detection/checks are suppressed under `AppData` (any subtree) and under
+/// any `Temp` directory: caches there contain fake `.git` entries that only
+/// produce noise errors and pollute the repos list (rule 1.1.4).
+fn is_git_check_exempt(rel: &str, cfg: &Config) -> bool {
+    let lower = rel.to_lowercase();
+    let first = lower.split('/').next().unwrap_or("");
+    if first == cfg.appdata_root.to_lowercase() {
+        return true;
+    }
+    lower.split('/').any(|c| c == "temp")
+}
+
 /// Inspect one detected repo with git. A missing upstream is NOT an error.
+/// An unborn HEAD (zero commits) is NOT an error either: it sets `no_commits`.
 fn inspect_repo(
     repo_path: &Path,
     rel: &str,
@@ -118,6 +131,7 @@ fn inspect_repo(
         dirty_files: 0,
         unpushed: None,
         no_upstream: false,
+        no_commits: false,
     };
     if !git_ok {
         return repo;
@@ -131,10 +145,18 @@ fn inspect_repo(
     }
     match run_git(repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]) {
         Ok(out) => repo.branch = Some(out.trim().to_string()),
-        Err(e) => errors.push(ScanError {
-            path: repo_path.to_string_lossy().into_owned(),
-            message: format!("git rev-parse failed: {}", e),
-        }),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("ambiguous argument") && msg.contains("HEAD") {
+                // unborn HEAD: repo has zero commits, not an error
+                repo.no_commits = true;
+            } else {
+                errors.push(ScanError {
+                    path: repo_path.to_string_lossy().into_owned(),
+                    message: format!("git rev-parse failed: {}", msg),
+                });
+            }
+        }
     }
     match run_git(repo_path, &["log", "@{u}..HEAD", "--oneline"]) {
         Ok(out) => {
@@ -178,6 +200,7 @@ pub fn run_scan(
     };
     let mut entries: Vec<Entry> = Vec::new();
     let mut recreate: Vec<RecreateEntry> = Vec::new();
+    let mut keep_dirs: Vec<KeepDirEntry> = Vec::new();
     let mut repos: Vec<Repo> = Vec::new();
     let mut errors: Vec<ScanError> = Vec::new();
     let mut pending_repos: Vec<(PathBuf, String)> = Vec::new(); // (abs path, rel path of repo root)
@@ -211,17 +234,19 @@ pub fn run_scan(
         if ft.is_dir() {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.eq_ignore_ascii_case(".git") {
-                // prune .git: one aggregate, internals never listed
+                // rule 1.1.3: .git is always KEEP — one aggregate counted in the
+                // KEEP totals, internals never listed, never RECREATE/SKIP
                 let (bytes, count) = aggregate_dir(path, &root, &mut errors);
-                recreate.push(RecreateEntry {
+                keep_dirs.push(KeepDirEntry {
                     path: rel.clone(),
                     kind: "git_dir".to_string(),
                     size_bytes: bytes,
                     file_count: count,
+                    linux_dest: format!("~/{}", rel),
                 });
                 git_bytes.insert(rel.clone(), bytes);
-                totals.recreate_entries += 1;
-                totals.recreate_bytes += bytes;
+                totals.keep_files += count;
+                totals.keep_bytes += bytes;
                 it.skip_current_dir();
                 continue;
             }
@@ -239,10 +264,13 @@ pub fn run_scan(
                 it.skip_current_dir();
                 continue;
             }
-            // repo detection: this directory contains a .git entry
-            let git_child = path.join(".git");
-            if std::fs::symlink_metadata(&git_child).is_ok() {
-                pending_repos.push((path.to_path_buf(), rel.clone()));
+            // repo detection: this directory contains a .git entry; suppressed
+            // under AppData / Temp (fake .git entries in caches, rule 1.1.4)
+            if !is_git_check_exempt(&rel, cfg) {
+                let git_child = path.join(".git");
+                if std::fs::symlink_metadata(&git_child).is_ok() {
+                    pending_repos.push((path.to_path_buf(), rel.clone()));
+                }
             }
             continue;
         }
@@ -305,6 +333,7 @@ pub fn run_scan(
         totals,
         entries,
         recreate,
+        keep_dirs,
         repos,
         errors,
     };

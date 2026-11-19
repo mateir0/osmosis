@@ -1,6 +1,7 @@
 //! File/directory classification rules (section 1.2 of the slice spec).
 //!
 //! Precedence:
+//!   (0) anything inside a `.git` directory is KEEP wholesale (never RECREATE/SKIP)
 //!   (1) RECREATE directory matches (applied at walk time, see scan.rs)
 //!   (2) filename SKIP rules — universal: they apply even inside KEEP-mapped
 //!       folders (NTUSER.DAT*, ntuser.ini, Thumbs.db, desktop.ini, *.tmp, *.sys)
@@ -30,12 +31,27 @@ pub fn is_recreate_dir(name: &str, cfg: &Config) -> bool {
     cfg.recreate_dirs.iter().any(|d| d == &lower)
 }
 
+/// True when any path component is a `.git` directory (case-insensitive).
+/// Anything inside `.git` is KEEP wholesale: no RECREATE-name or SKIP rules
+/// apply there (rule 1.1.3).
+pub fn is_inside_git_dir(rel: &str) -> bool {
+    rel.split('/').any(|c| c.eq_ignore_ascii_case(".git"))
+}
+
 /// Classify a single file given its root-relative path (rules 1-5).
 pub fn classify_file(rel: &str, cfg: &Config) -> Class {
     let lower = rel.to_lowercase();
 
     let first = lower.split('/').next().unwrap_or("");
     let name = lower.rsplit('/').next().unwrap_or("");
+
+    // (0) `.git` is always KEEP, before any SKIP rule
+    if is_inside_git_dir(&lower) {
+        return Class::Keep {
+            linux_dest: format!("~/{}", rel),
+            sensitive: false,
+        };
+    }
 
     // (2) filename SKIP rules — universal, even inside KEEP-mapped folders
     if cfg.skip_names.iter().any(|n| n == name) {
@@ -176,10 +192,102 @@ mod tests {
     fn default_rule_outside_mapped_folders_is_skip() {
         assert_eq!(classify_file("RandomFolder/x.bin", &cfg()), Class::Skip);
         // under a mapped top-level folder but not a full mapping prefix -> KEEP at ~/...
-        match classify_file(".minecraft/options.txt", &cfg()) {
-            Class::Keep { linux_dest, .. } => assert_eq!(linux_dest, "~/.minecraft/options.txt"),
+        match classify_file("Downloads/archive/old.zip", &cfg()) {
+            Class::Keep { linux_dest, .. } => {
+                assert_eq!(linux_dest, "~/Downloads/archive/old.zip")
+            }
             other => panic!("expected Keep, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn roaming_minecraft_maps_to_home_dot_minecraft() {
+        match classify_file("AppData/Roaming/.minecraft/saves/world/level.dat", &cfg()) {
+            Class::Keep {
+                linux_dest,
+                sensitive,
+            } => {
+                assert_eq!(linux_dest, "~/.minecraft/saves/world/level.dat");
+                assert!(!sensitive);
+            }
+            other => panic!("expected Keep, got {:?}", other),
+        }
+        // profile-root .minecraft is no longer mapped (old .minecraft/saves
+        // default was removed) -> falls through to the AppData/default rules
+        assert_eq!(classify_file(".minecraft/options.txt", &cfg()), Class::Skip);
+    }
+
+    #[test]
+    fn telegram_and_mozilla_and_chrome_are_sensitive_keep() {
+        let c = cfg();
+        match classify_file("AppData/Roaming/Telegram Desktop/tdata/key_datas", &c) {
+            Class::Keep {
+                linux_dest,
+                sensitive,
+            } => {
+                assert_eq!(linux_dest, "~/.local/share/TelegramDesktop/tdata/key_datas");
+                assert!(sensitive);
+            }
+            other => panic!("expected Keep, got {:?}", other),
+        }
+        match classify_file(
+            "AppData/Roaming/Mozilla/Firefox/Profiles/abc.default/cookies.sqlite",
+            &c,
+        ) {
+            Class::Keep {
+                linux_dest,
+                sensitive,
+            } => {
+                assert_eq!(
+                    linux_dest,
+                    "~/.mozilla/Firefox/Profiles/abc.default/cookies.sqlite"
+                );
+                assert!(sensitive);
+            }
+            other => panic!("expected Keep, got {:?}", other),
+        }
+        match classify_file("AppData/Local/Google/Chrome/User Data/Default/Cookies", &c) {
+            Class::Keep {
+                linux_dest,
+                sensitive,
+            } => {
+                assert_eq!(linux_dest, "~/.config/google-chrome/Default/Cookies");
+                assert!(sensitive);
+            }
+            other => panic!("expected Keep, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn git_dir_is_always_keep() {
+        let c = cfg();
+        // even a recreate-named subfolder inside .git is KEEP, never RECREATE/SKIP
+        match classify_file("repo/.git/node_modules/pkg/index.js", &c) {
+            Class::Keep {
+                linux_dest,
+                sensitive,
+            } => {
+                assert_eq!(linux_dest, "~/repo/.git/node_modules/pkg/index.js");
+                assert!(!sensitive);
+            }
+            other => panic!("expected Keep, got {:?}", other),
+        }
+        // filename SKIP rules do not apply inside .git either
+        match classify_file("repo/.git/desktop.ini", &c) {
+            Class::Keep { .. } => {}
+            other => panic!("expected Keep, got {:?}", other),
+        }
+        assert!(is_inside_git_dir("Repo/.GIT/objects/ab"));
+        assert!(!is_inside_git_dir("repo/.github/workflows/ci.yml"));
+    }
+
+    #[test]
+    fn dist_and_out_are_recreate_dirs() {
+        let c = cfg();
+        assert!(is_recreate_dir("dist", &c));
+        assert!(is_recreate_dir("Dist", &c));
+        assert!(is_recreate_dir("out", &c));
+        assert!(is_recreate_dir("OUT", &c));
     }
 
     #[test]
