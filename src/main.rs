@@ -1,7 +1,9 @@
-//! OSmosis CLI entry point. Subcommands: `scan` (slice 1), `stage` (slice 2).
+//! OSmosis CLI entry point. Subcommands: `scan` (slice 1), `stage` (slice 2),
+//! `import` (slice 3).
 
 use clap::{Parser, Subcommand};
 use osmosis::config::Config;
+use osmosis::importer::run_import;
 use osmosis::scan::run_scan;
 use osmosis::stage::run_stage;
 use std::path::PathBuf;
@@ -45,6 +47,20 @@ enum Commands {
         /// Staging root, e.g. D:\ — everything goes under <staging>/osmosis-stage/.
         #[arg(long)]
         staging: PathBuf,
+    },
+    /// Unpack a staged tree into a home directory, hash-verified, and write an
+    /// import receipt. Reads the stage read-only; writes only under --home.
+    Import {
+        /// The osmosis-stage folder (must contain manifest.json).
+        #[arg(long)]
+        stage: PathBuf,
+        /// Target home directory. Defaults to the HOME environment variable.
+        #[arg(long)]
+        home: Option<PathBuf>,
+        /// Compute and print the plan (to place / already present / conflicts)
+        /// and write nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -109,5 +125,35 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
+        Commands::Import {
+            stage,
+            home,
+            dry_run,
+        } => {
+            let home = match home {
+                Some(h) => h,
+                None => match std::env::var_os("HOME") {
+                    Some(v) if !v.is_empty() => PathBuf::from(v),
+                    _ => {
+                        eprintln!(
+                            "osmosis: error: no --home given and the HOME environment variable is not set."
+                        );
+                        eprintln!("osmosis: pass --home <dir> explicitly, e.g. `osmosis import --stage <dir> --home /home/<user>`.");
+                        return ExitCode::from(1);
+                    }
+                },
+            };
+            match run_import(&stage, &home, dry_run) {
+                Ok(out) => {
+                    // the same summary that was written to import-report.txt, on stdout
+                    print!("{}", out.summary);
+                    ExitCode::from(out.exit_code)
+                }
+                Err(e) => {
+                    eprintln!("osmosis: error: {}", e);
+                    ExitCode::from(1)
+                }
+            }
+        }
     }
 }

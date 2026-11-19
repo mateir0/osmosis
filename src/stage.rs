@@ -72,12 +72,12 @@ pub struct StageOutcome {
     pub exit_code: u8,
 }
 
-enum CopyFail {
+pub(crate) enum CopyFail {
     SourceOpen(io::Error),
     Other(String),
 }
 
-enum FileCopy {
+pub(crate) enum FileCopy {
     Verified {
         source_hash: Option<String>,
         staged_hash: String,
@@ -89,7 +89,7 @@ enum FileCopy {
 }
 
 /// xxh64 of a file's contents, streamed. Same encoding as the scanner (`{:016x}`).
-fn hash_file(path: &Path) -> io::Result<String> {
+pub(crate) fn hash_file(path: &Path) -> io::Result<String> {
     let mut f = File::open(path)?;
     let mut h = Xxh64::new(0);
     let mut buf = vec![0u8; 64 * 1024];
@@ -126,7 +126,7 @@ fn stage_rel_from_dest(linux_dest: &str) -> Result<String, String> {
 }
 
 /// Lexically absolutize a path (resolve `.`/`..` without touching the fs).
-fn abs_lexical(p: &Path) -> PathBuf {
+pub(crate) fn abs_lexical(p: &Path) -> PathBuf {
     let abs = if p.is_absolute() {
         p.to_path_buf()
     } else {
@@ -150,7 +150,7 @@ fn abs_lexical(p: &Path) -> PathBuf {
 /// Canonicalize the deepest existing ancestor of `p` and append the remaining
 /// components, so the result is in the same (canonical) form as a canonicalized
 /// existing directory.
-fn resolve_existing(p: &Path) -> PathBuf {
+pub(crate) fn resolve_existing(p: &Path) -> PathBuf {
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     let mut anc = p;
     loop {
@@ -202,7 +202,7 @@ fn safe_join_under(stage_root_canon: &Path, rel: &str) -> Result<PathBuf, String
 /// against the manifest hash when one exists, otherwise against the source
 /// stream hash. Sets the staged mtime to the source mtime where the platform
 /// allows. Contents only — no ACLs.
-fn copy_file_verified(
+pub(crate) fn copy_file_verified(
     src: &Path,
     dest: &Path,
     manifest_hash: Option<&str>,
