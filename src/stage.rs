@@ -962,8 +962,17 @@ mod tests {
 
     #[test]
     fn abs_lexical_resolves_dotdot() {
-        let p = abs_lexical(Path::new("C:\\a\\b\\..\\c"));
-        assert_eq!(p, PathBuf::from("C:\\a\\c"));
+        // Component-built so the test is separator-agnostic. The base must be a
+        // genuinely absolute path on each OS: "/" alone is not absolute on
+        // Windows (it has a root but no prefix), so pick the native root.
+        #[cfg(windows)]
+        let root = PathBuf::from(r"C:\");
+        #[cfg(not(windows))]
+        let root = PathBuf::from("/");
+
+        let input = root.join("a").join("b").join("..").join("c");
+        let expected = root.join("a").join("c");
+        assert_eq!(abs_lexical(&input), expected);
     }
 
     #[test]
