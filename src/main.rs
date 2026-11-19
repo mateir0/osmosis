@@ -1,10 +1,11 @@
 //! OSmosis CLI entry point. Subcommands: `scan` (slice 1), `stage` (slice 2),
-//! `import` (slice 3).
+//! `import` (slice 3), `setup` (slice 4).
 
 use clap::{Parser, Subcommand};
 use osmosis::config::Config;
 use osmosis::importer::run_import;
 use osmosis::scan::run_scan;
+use osmosis::setup::run_setup;
 use osmosis::stage::run_stage;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -59,6 +60,17 @@ enum Commands {
         home: Option<PathBuf>,
         /// Compute and print the plan (to place / already present / conflicts)
         /// and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Turn a fresh Linux Mint into the working machine (Linux-only). Runs
+    /// unprivileged and escalates per command with sudo.
+    Setup {
+        /// Target home directory. Defaults to the HOME environment variable.
+        #[arg(long)]
+        home: Option<PathBuf>,
+        /// Print the plan (would-run / already-done / not-applicable) and
+        /// execute no state-changing commands.
         #[arg(long)]
         dry_run: bool,
     },
@@ -146,6 +158,32 @@ fn main() -> ExitCode {
             match run_import(&stage, &home, dry_run) {
                 Ok(out) => {
                     // the same summary that was written to import-report.txt, on stdout
+                    print!("{}", out.summary);
+                    ExitCode::from(out.exit_code)
+                }
+                Err(e) => {
+                    eprintln!("osmosis: error: {}", e);
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Commands::Setup { home, dry_run } => {
+            let home = match home {
+                Some(h) => h,
+                None => match std::env::var_os("HOME") {
+                    Some(v) if !v.is_empty() => PathBuf::from(v),
+                    _ => {
+                        eprintln!(
+                            "osmosis: error: no --home given and the HOME environment variable is not set."
+                        );
+                        eprintln!("osmosis: pass --home <dir> explicitly, e.g. `osmosis setup --home /home/<user>`.");
+                        return ExitCode::from(1);
+                    }
+                },
+            };
+            match run_setup(&home, dry_run) {
+                Ok(out) => {
+                    // the same summary that was written to setup-report.txt
                     print!("{}", out.summary);
                     ExitCode::from(out.exit_code)
                 }
