@@ -1,0 +1,83 @@
+name: release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # A red test suite must fail the workflow: no binaries from broken code.
+      - name: Test
+        run: cargo test --release
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Stage binary
+        run: |
+          cp target/release/osmosis osmosis-linux-x86_64
+          chmod +x osmosis-linux-x86_64
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: osmosis-linux-x86_64
+          path: osmosis-linux-x86_64
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Default MSVC target on purpose; no MinGW.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Stage binary
+        run: Copy-Item -Path target\release\osmosis.exe -Destination osmosis-windows-x86_64.exe
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: osmosis-windows-x86_64.exe
+          path: osmosis-windows-x86_64.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Fixed tag: re-runs update the same release, never create duplicates.
+      - name: Publish latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build (master)
+          prerelease: true
+          files: |
+            dist/osmosis-linux-x86_64
+            dist/osmosis-windows-x86_64.exe
