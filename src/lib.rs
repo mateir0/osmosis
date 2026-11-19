@@ -6,6 +6,7 @@
 
 pub mod classify;
 pub mod config;
+pub mod games;
 pub mod importer;
 pub mod model;
 pub mod report;
@@ -14,6 +15,10 @@ pub mod setup;
 pub mod stage;
 
 pub use config::Config;
+pub use games::{
+    games_table, run_games, run_games_with, GameDef, GameKind, GameReport, GamesOutcome,
+    GamesReport,
+};
 pub use importer::{run_import, ImportOutcome, ImportReport};
 pub use scan::{run_scan, ScanResult};
 pub use setup::{run_setup, run_setup_with, CommandOutput, Runner, SetupOutcome, SetupReport};
