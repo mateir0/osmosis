@@ -1,8 +1,9 @@
-//! OSmosis CLI entry point. Slice 1 exposes a single subcommand: `scan`.
+//! OSmosis CLI entry point. Subcommands: `scan` (slice 1), `stage` (slice 2).
 
 use clap::{Parser, Subcommand};
 use osmosis::config::Config;
 use osmosis::scan::run_scan;
+use osmosis::stage::run_stage;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -33,6 +34,17 @@ enum Commands {
         /// Optional staging path for a free-space fit check.
         #[arg(long)]
         staging: Option<PathBuf>,
+    },
+    /// Stage every keeper from a manifest onto an external drive, hash-verified.
+    /// Reads the manifest and the source tree read-only; writes only under
+    /// <staging>/osmosis-stage/.
+    Stage {
+        /// Path to manifest.json produced by `osmosis scan`.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Staging root, e.g. D:\ — everything goes under <staging>/osmosis-stage/.
+        #[arg(long)]
+        staging: PathBuf,
     },
 }
 
@@ -86,5 +98,16 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Commands::Stage { manifest, staging } => match run_stage(&manifest, &staging) {
+            Ok(out) => {
+                // the same summary that was written to copy-report.txt, on stdout
+                print!("{}", out.summary);
+                ExitCode::from(out.exit_code)
+            }
+            Err(e) => {
+                eprintln!("osmosis: error: {}", e);
+                ExitCode::from(1)
+            }
+        },
     }
 }

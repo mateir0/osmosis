@@ -9,6 +9,8 @@ pub mod config;
 pub mod model;
 pub mod report;
 pub mod scan;
+pub mod stage;
 
 pub use config::Config;
 pub use scan::{run_scan, ScanResult};
+pub use stage::{run_stage, verify_stage, CopyReport, StageOutcome};
