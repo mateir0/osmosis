@@ -4,6 +4,7 @@
 pub mod games;
 pub mod import;
 pub mod install;
+pub mod preflight;
 pub mod scan;
 pub mod setup;
 pub mod stage;
@@ -16,6 +17,7 @@ use crate::gui::state::App;
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     phase_header(ui, app.screen);
     match app.screen {
+        Screen::Preflight => preflight::show(app, ui),
         Screen::Scan => scan::show(app, ui),
         Screen::Stage => stage::show(app, ui),
         Screen::Install => install::show(app, ui),

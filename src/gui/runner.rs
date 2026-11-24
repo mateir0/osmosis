@@ -7,6 +7,7 @@ use std::sync::mpsc::Sender;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobKind {
+    Preflight,
     Scan,
     Stage,
     Import,
@@ -17,6 +18,7 @@ pub enum JobKind {
 impl JobKind {
     pub fn label(self) -> &'static str {
         match self {
+            JobKind::Preflight => "preflight",
             JobKind::Scan => "scan",
             JobKind::Stage => "stage",
             JobKind::Import => "import",

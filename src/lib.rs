@@ -11,6 +11,8 @@ pub mod games;
 pub mod gui;
 pub mod importer;
 pub mod model;
+pub mod placeholder;
+pub mod preflight;
 pub mod report;
 pub mod scan;
 pub mod setup;
@@ -23,7 +25,11 @@ pub use games::{
     GamesReport,
 };
 pub use importer::{run_import, ImportOutcome, ImportReport};
-pub use scan::{run_scan, ScanResult};
+pub use preflight::{
+    run_preflight, run_preflight_with, AppItem, Buckets, GameItem, Hardware, Inventory,
+    PreflightOutcome, PreflightReport, ScanCrossRef,
+};
+pub use scan::{run_scan, run_scan_with_attrs, ScanResult};
 pub use setup::{
     run_setup, run_setup_with, CommandOutput, Runner, RunnerEvent, SetupOutcome, SetupReport,
 };

@@ -4,12 +4,18 @@
 use crate::gui::jobs::JobHandle;
 use crate::gui::nav::Screen;
 use crate::gui::runner::{JobMsg, JobSummary};
+use crate::preflight::PreflightReport;
+use std::sync::{Arc, Mutex};
 
 const MAX_EVENTS: usize = 600;
 
 pub struct App {
     pub screen: Screen,
     pub dry_run: bool,
+    // preflight
+    pub preflight_manifest: String,
+    pub preflight_out: String,
+    pub preflight_shared: Arc<Mutex<Option<PreflightReport>>>,
     // scan
     pub scan_root: String,
     pub scan_out: String,
@@ -50,6 +56,9 @@ impl App {
         App {
             screen: crate::gui::nav::screens_for_platform()[0],
             dry_run: false,
+            preflight_manifest: "./osmosis-output/manifest.json".to_string(),
+            preflight_out: "./osmosis-output".to_string(),
+            preflight_shared: Arc::new(Mutex::new(None)),
             scan_root: profile,
             scan_out: "./osmosis-output".to_string(),
             scan_staging: String::new(),

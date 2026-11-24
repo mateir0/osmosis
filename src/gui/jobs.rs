@@ -4,8 +4,10 @@
 
 use crate::config::Config;
 use crate::gui::runner::{GuiRunner, JobKind, JobMsg, JobSummary};
+use crate::preflight::PreflightReport;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// Handle to a running job: the receiving end of its message channel.
@@ -33,6 +35,29 @@ fn opt_path(s: &str) -> Option<PathBuf> {
     } else {
         Some(PathBuf::from(t))
     }
+}
+
+/// `osmosis preflight [--manifest <p>] [--out <dir>]` — Windows-only; the
+/// report is also stored in `shared` so the screen can build its view.
+pub fn start_preflight(
+    manifest: String,
+    out: String,
+    shared: Arc<Mutex<Option<PreflightReport>>>,
+) -> Result<JobHandle, String> {
+    let out = opt_path(&out).ok_or("choose the output folder")?;
+    let manifest = opt_path(&manifest);
+    Ok(spawn(JobKind::Preflight, move |_tx| {
+        let res = crate::preflight::run_preflight(manifest.as_deref(), &out)?;
+        if let Ok(mut g) = shared.lock() {
+            *g = Some(res.report.clone());
+        }
+        Ok(JobSummary {
+            kind: JobKind::Preflight,
+            ok: true, // advisory: never blocks the journey
+            exit_code: 0,
+            text: res.summary,
+        })
+    }))
 }
 
 /// `osmosis scan [--root] [--config] [--out] [--staging]`

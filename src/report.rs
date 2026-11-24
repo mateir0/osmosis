@@ -112,6 +112,36 @@ pub fn build_summary(manifest: &Manifest, staging: Option<&Path>) -> String {
     }
     s.push('\n');
 
+    // Placeholder (cloud stub) section — additive: only when count > 0.
+    let ph = &manifest.placeholders;
+    if ph.count > 0 {
+        let header = if ph.onedrive_detected {
+            "PLACEHOLDERS (ONEDRIVE FILES ON-DEMAND)"
+        } else {
+            "PLACEHOLDERS (CLOUD FILES ON-DEMAND)"
+        };
+        s.push_str(&format!("{}\n", header));
+        s.push_str(&format!("{}\n", "-".repeat(header.len())));
+        s.push_str(&format!(
+            "count: {}  apparent size: {}\n",
+            ph.count,
+            human(ph.bytes)
+        ));
+        for p in ph.paths.iter().take(100) {
+            s.push_str(&format!("- {}\n", p));
+        }
+        if ph.paths.len() > 100 {
+            s.push_str(&format!(
+                "+ {} more (full list in manifest.json)\n",
+                ph.paths.len() - 100
+            ));
+        }
+        s.push_str(&format!(
+            "{}\n\n",
+            crate::placeholder::placeholder_warning(ph.count, &human(ph.bytes))
+        ));
+    }
+
     match staging {
         Some(p) => match fs2::available_space(p) {
             Ok(free) => {

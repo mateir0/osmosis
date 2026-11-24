@@ -7,6 +7,7 @@ use crate::gui::runner::JobKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
+    Preflight,
     Scan,
     Stage,
     Install,
@@ -19,6 +20,7 @@ pub enum Screen {
 impl Screen {
     pub fn title(self) -> &'static str {
         match self {
+            Screen::Preflight => "0. Preflight",
             Screen::Scan => "1. Scan",
             Screen::Stage => "2. Stage",
             Screen::Install => "3. Install Linux",
@@ -32,6 +34,11 @@ impl Screen {
     /// The "what this does" line shown at the top of every screen.
     pub fn blurb(self) -> &'static str {
         match self {
+            Screen::Preflight => {
+                "Windows only: what will work on Linux, what has an equivalent, and what \
+                              will NOT work — plus hardware/BitLocker warnings. Advisory; \
+                              writes preflight-report.{json,txt} into the output folder."
+            }
             Screen::Scan => {
                 "Reads your Windows profile (read-only), classifies every file, \
                              and writes manifest.json + report.txt into the output folder."
@@ -61,9 +68,11 @@ impl Screen {
         }
     }
 
-    /// The engine job this screen launches, if any.
+    /// The engine job this screen launches, if any. Preflight is advisory, so
+    /// Next is never gated on it (returns None here).
     pub fn job_kind(self) -> Option<JobKind> {
         match self {
+            Screen::Preflight => None,
             Screen::Scan => Some(JobKind::Scan),
             Screen::Stage => Some(JobKind::Stage),
             Screen::Import => Some(JobKind::Import),
@@ -78,6 +87,7 @@ impl Screen {
 pub fn screens_for_platform() -> &'static [Screen] {
     if cfg!(windows) {
         &[
+            Screen::Preflight,
             Screen::Scan,
             Screen::Stage,
             Screen::Install,
@@ -85,6 +95,7 @@ pub fn screens_for_platform() -> &'static [Screen] {
         ]
     } else {
         &[
+            Screen::Preflight,
             Screen::Install,
             Screen::Import,
             Screen::Setup,

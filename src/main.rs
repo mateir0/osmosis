@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use osmosis::config::Config;
 use osmosis::games::run_games;
 use osmosis::importer::run_import;
+use osmosis::preflight::run_preflight;
 use osmosis::scan::run_scan;
 use osmosis::setup::run_setup;
 use osmosis::stage::run_stage;
@@ -24,6 +25,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Compatibility report, run on Windows BEFORE wiping: installed apps,
+    /// games/anti-cheat, hardware, BitLocker. Writes preflight-report.{json,txt}
+    /// into --out. Windows-only; advisory (never blocks the journey).
+    Preflight {
+        /// Optional manifest.json from `osmosis scan` to cross-reference
+        /// (OneDrive placeholders, detected games).
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+        /// Output directory (the only place the program writes).
+        #[arg(long, default_value = "./osmosis-output")]
+        out: PathBuf,
+    },
     /// Scan a directory tree and write manifest.json + report.txt into --out.
     Scan {
         /// Directory to scan. Defaults to the USERPROFILE environment variable.
@@ -94,6 +107,16 @@ enum Commands {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
+        Commands::Preflight { manifest, out } => match run_preflight(manifest.as_deref(), &out) {
+            Ok(res) => {
+                print!("{}", res.summary);
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("osmosis: error: {}", e);
+                ExitCode::from(1)
+            }
+        },
         Commands::Scan {
             root,
             config,

@@ -22,6 +22,22 @@ pub struct Entry {
     pub sensitive: bool,
     pub hash: Option<String>,
     pub hash_status: String,
+    /// True when the file is an online-only cloud placeholder (OneDrive Files
+    /// On-Demand stub) at scan time. Additive field: defaults to false for
+    /// manifests written before this field existed.
+    #[serde(default)]
+    pub placeholder: bool,
+}
+
+/// Aggregate of every placeholder found during the scan. Always present in
+/// the manifest (may be 0/empty); the human report section appears only when
+/// count > 0.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Placeholders {
+    pub count: u64,
+    pub bytes: u64,
+    pub onedrive_detected: bool,
+    pub paths: Vec<String>,
 }
 
 /// One pruned aggregate: a RECREATE directory or a `.git` directory.
@@ -78,4 +94,7 @@ pub struct Manifest {
     pub keep_dirs: Vec<KeepDirEntry>,
     pub repos: Vec<Repo>,
     pub errors: Vec<ScanError>,
+    /// Placeholder (cloud stub) aggregate; always present, may be 0/empty.
+    #[serde(default)]
+    pub placeholders: Placeholders,
 }

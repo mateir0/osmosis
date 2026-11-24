@@ -57,10 +57,15 @@ pub struct CopyReport {
     pub verify_failed: CategoryTotals,
     pub skipped_locked: CategoryTotals,
     pub skipped_missing: CategoryTotals,
+    /// Online-only cloud placeholders: never copied, never counted as success.
+    #[serde(default)]
+    pub skipped_placeholder: CategoryTotals,
     pub copied_unhashed_hashes: Vec<FileHashes>,
     pub verify_failed_files: Vec<ProblemFile>,
     pub skipped_locked_files: Vec<ProblemFile>,
     pub skipped_missing_files: Vec<ProblemFile>,
+    #[serde(default)]
+    pub skipped_placeholder_files: Vec<ProblemFile>,
 }
 
 #[derive(Debug)]
@@ -292,9 +297,11 @@ struct Acc {
     failed: CategoryTotals,
     locked: CategoryTotals,
     missing: CategoryTotals,
+    placeholder: CategoryTotals,
     failed_files: Vec<ProblemFile>,
     locked_files: Vec<ProblemFile>,
     missing_files: Vec<ProblemFile>,
+    placeholder_files: Vec<ProblemFile>,
     unhashed_hashes: Vec<FileHashes>,
 }
 
@@ -310,9 +317,11 @@ impl Acc {
             failed: CategoryTotals::default(),
             locked: CategoryTotals::default(),
             missing: CategoryTotals::default(),
+            placeholder: CategoryTotals::default(),
             failed_files: Vec::new(),
             locked_files: Vec::new(),
             missing_files: Vec::new(),
+            placeholder_files: Vec::new(),
             unhashed_hashes: Vec::new(),
         }
     }
@@ -349,6 +358,15 @@ impl Acc {
         });
     }
 
+    fn record_placeholder(&mut self, path: &str, bytes: u64, reason: String) {
+        self.placeholder.count += 1;
+        self.placeholder.bytes += bytes;
+        self.placeholder_files.push(ProblemFile {
+            path: path.to_string(),
+            reason,
+        });
+    }
+
     fn record_failed(&mut self, path: &str, bytes: u64, reason: String) {
         self.failed.count += 1;
         self.failed.bytes += bytes;
@@ -378,13 +396,14 @@ fn write_report_files(stage_root: &Path, report: &CopyReport, summary: &str) -> 
     Ok(())
 }
 
-/// Handle one KEEP file entry (resume check + copy + verify). Returns the bytes
-/// accounted for this file.
+/// Handle one KEEP file entry (placeholder check + resume + copy + verify).
+/// Returns the bytes accounted for this file.
 fn stage_one_entry(
     e: &crate::model::Entry,
     src: &Path,
     stage_root: &Path,
     acc: &mut Acc,
+    attrs: &dyn Fn(&Path) -> Option<u32>,
 ) -> Result<(), String> {
     let rel = stage_rel_from_dest(&e.linux_dest)?;
     let dest = safe_join_under(stage_root, &rel)?;
@@ -404,6 +423,23 @@ fn stage_one_entry(
         }
     };
     let src_size = src_md.len();
+
+    // Live placeholder re-check (Windows attribute bits): the manifest flag
+    // drives the warning, but the LIVE check decides the copy — a file that
+    // was a stub at scan time and is real now stages normally. A file that is
+    // still a stub is NEVER copied and NEVER counted as a success.
+    if attrs(src)
+        .map(crate::placeholder::is_placeholder_attributes)
+        .unwrap_or(false)
+    {
+        acc.record_placeholder(
+            disp,
+            src_size,
+            crate::placeholder::PLACEHOLDER_REASON.to_string(),
+        );
+        acc.progress(src_size);
+        return Ok(());
+    }
 
     // resume: staged file already exists with the same size and, where a
     // manifest hash exists, a matching hash => already_verified, no copy
@@ -469,6 +505,7 @@ fn stage_one_keep_dir(
     root: &Path,
     stage_root: &Path,
     acc: &mut Acc,
+    attrs: &dyn Fn(&Path) -> Option<u32>,
 ) -> Result<(), String> {
     let src_dir = root.join(&d.path);
     let rel = stage_rel_from_dest(&d.linux_dest)?;
@@ -508,6 +545,18 @@ fn stage_one_keep_dir(
             }
         };
         let src_size = src_md.len();
+        if attrs(src)
+            .map(crate::placeholder::is_placeholder_attributes)
+            .unwrap_or(false)
+        {
+            acc.record_placeholder(
+                &disp,
+                src_size,
+                crate::placeholder::PLACEHOLDER_REASON.to_string(),
+            );
+            acc.progress(src_size);
+            continue;
+        }
         // resume: same size, no checkable hash for these files
         if let Ok(dmd) = std::fs::metadata(&dest) {
             if dmd.len() == src_size {
@@ -573,6 +622,16 @@ fn stage_one_keep_dir(
 /// the manifest under `<staging>/osmosis-stage/`, hash-verified, resumable.
 /// Writes only inside `<staging>/osmosis-stage/`; never touches a source file.
 pub fn run_stage(manifest_path: &Path, staging: &Path) -> Result<StageOutcome, String> {
+    run_stage_with(manifest_path, staging, &crate::placeholder::file_attributes)
+}
+
+/// Same as `run_stage`, but the live Windows attribute read is injected, so
+/// fixture tests can simulate placeholder stubs on any platform.
+pub fn run_stage_with(
+    manifest_path: &Path,
+    staging: &Path,
+    attrs: &dyn Fn(&Path) -> Option<u32>,
+) -> Result<StageOutcome, String> {
     let text = std::fs::read_to_string(manifest_path)
         .map_err(|e| format!("cannot read manifest {}: {}", manifest_path.display(), e))?;
     let manifest: Manifest = serde_json::from_str(&text)
@@ -667,12 +726,14 @@ pub fn run_stage(manifest_path: &Path, staging: &Path) -> Result<StageOutcome, S
             verify_failed: CategoryTotals::default(),
             skipped_locked: CategoryTotals::default(),
             skipped_missing: CategoryTotals::default(),
+            skipped_placeholder: CategoryTotals::default(),
             copied_unhashed_hashes: Vec::new(),
             verify_failed_files: Vec::new(),
             skipped_locked_files: Vec::new(),
             skipped_missing_files: Vec::new(),
+            skipped_placeholder_files: Vec::new(),
         };
-        let summary = build_copy_report_txt(&report);
+        let summary = build_copy_report_txt_with_manifest(&report, Some(&manifest));
         write_report_files(&stage_root, &report, &summary)?;
         eprintln!(
             "osmosis: error: staging does not fit: need {}, free {}, shortfall {}",
@@ -694,10 +755,16 @@ pub fn run_stage(manifest_path: &Path, staging: &Path) -> Result<StageOutcome, S
     // (6) copy + verify every keeper
     let mut acc = Acc::new(total_files, total_bytes);
     for e in &manifest.entries {
-        stage_one_entry(e, &root.join(&e.relative_path), &stage_root, &mut acc)?;
+        stage_one_entry(
+            e,
+            &root.join(&e.relative_path),
+            &stage_root,
+            &mut acc,
+            attrs,
+        )?;
     }
     for d in &manifest.keep_dirs {
-        stage_one_keep_dir(d, &root, &stage_root, &mut acc)?;
+        stage_one_keep_dir(d, &root, &stage_root, &mut acc, attrs)?;
     }
 
     // (7) copy report (json + txt) and exit code
@@ -715,16 +782,19 @@ pub fn run_stage(manifest_path: &Path, staging: &Path) -> Result<StageOutcome, S
         verify_failed: acc.failed,
         skipped_locked: acc.locked,
         skipped_missing: acc.missing,
+        skipped_placeholder: acc.placeholder,
         copied_unhashed_hashes: acc.unhashed_hashes,
         verify_failed_files: acc.failed_files,
         skipped_locked_files: acc.locked_files,
         skipped_missing_files: acc.missing_files,
+        skipped_placeholder_files: acc.placeholder_files,
     };
-    let summary = build_copy_report_txt(&report);
+    let summary = build_copy_report_txt_with_manifest(&report, Some(&manifest));
     write_report_files(&stage_root, &report, &summary)?;
     let exit_code = if report.verify_failed.count == 0
         && report.skipped_locked.count == 0
         && report.skipped_missing.count == 0
+        && report.skipped_placeholder.count == 0
     {
         0
     } else {
@@ -851,15 +921,24 @@ pub fn verify_stage(manifest: &Manifest, stage_root: &Path) -> Result<CopyReport
         verify_failed: acc.failed,
         skipped_locked: acc.locked,
         skipped_missing: acc.missing,
+        skipped_placeholder: CategoryTotals::default(),
         copied_unhashed_hashes: Vec::new(),
         verify_failed_files: acc.failed_files,
         skipped_locked_files: acc.locked_files,
         skipped_missing_files: acc.missing_files,
+        skipped_placeholder_files: Vec::new(),
     })
 }
 
 /// Human-readable copy report, same style as report.txt.
 pub fn build_copy_report_txt(r: &CopyReport) -> String {
+    build_copy_report_txt_with_manifest(r, None)
+}
+
+/// `build_copy_report_txt` plus the manifest-flag context: when the scan
+/// flagged placeholders, the summary says so even if they were real by stage
+/// time (the manifest flag decides the warning; the live check decided the copy).
+pub fn build_copy_report_txt_with_manifest(r: &CopyReport, manifest: Option<&Manifest>) -> String {
     let mut s = String::new();
     s.push_str("OSmosis copy report\n");
     s.push_str("====================\n");
@@ -902,9 +981,14 @@ pub fn build_copy_report_txt(r: &CopyReport) -> String {
         human(r.skipped_locked.bytes)
     ));
     s.push_str(&format!(
-        "skipped_missing:   {} ({})\n\n",
+        "skipped_missing:   {} ({})\n",
         r.skipped_missing.count,
         human(r.skipped_missing.bytes)
+    ));
+    s.push_str(&format!(
+        "skipped_placeholder: {} ({})\n\n",
+        r.skipped_placeholder.count,
+        human(r.skipped_placeholder.bytes)
     ));
 
     s.push_str("VERIFY FAILURES\n");
@@ -932,6 +1016,38 @@ pub fn build_copy_report_txt(r: &CopyReport) -> String {
     }
     for p in &r.skipped_missing_files {
         s.push_str(&format!("- {}: {}\n", p.path, p.reason));
+    }
+    s.push('\n');
+    s.push_str("SKIPPED (PLACEHOLDER — online-only cloud stubs, NOT copied)\n");
+    s.push_str("----------------------------------------------------------\n");
+    if r.skipped_placeholder_files.is_empty() {
+        s.push_str("(none)\n");
+    }
+    for p in &r.skipped_placeholder_files {
+        s.push_str(&format!("- {}: {}\n", p.path, p.reason));
+    }
+    s.push('\n');
+
+    // The manifest flag decides the warning; the live check decided the copy.
+    let manifest_flagged = manifest
+        .map(|m| m.entries.iter().filter(|e| e.placeholder).count() as u64)
+        .unwrap_or(0);
+    if r.skipped_placeholder.count > 0 {
+        s.push_str(&format!(
+            "STAGING IS INCOMPLETE: {} placeholder file(s) ({}) were NOT staged — {}\n",
+            r.skipped_placeholder.count,
+            human(r.skipped_placeholder.bytes),
+            crate::placeholder::placeholder_warning(
+                r.skipped_placeholder.count,
+                &human(r.skipped_placeholder.bytes)
+            )
+        ));
+    } else if manifest_flagged > 0 {
+        s.push_str(&format!(
+            "Note: {} file(s) were placeholders at scan time but real at stage time; \
+             they were staged and hash-verified normally.\n",
+            manifest_flagged
+        ));
     }
     s
 }

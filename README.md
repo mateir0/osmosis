@@ -24,8 +24,26 @@ The GUI is a second binary, `osmosis-gui`, built from the same crate.
 
 ## The journey
 
-Six steps, in order. The first two run on Windows, the last four on the fresh
-Linux machine (Linux Mint, Ubuntu, Debian, Fedora, or Arch Linux).
+Seven steps, in order. Preflight, scan, and stage run on Windows; the last
+four run on the fresh Linux machine (Linux Mint, Ubuntu, Debian, Fedora, or
+Arch Linux).
+
+### 0. Preflight (Windows, optional but recommended)
+
+```powershell
+osmosis-windows-x86_64.exe preflight --out ./osmosis-output
+osmosis-windows-x86_64.exe preflight --manifest ./osmosis-output/manifest.json --out ./osmosis-output
+```
+
+Advisory compatibility report written before anything is wiped:
+`preflight-report.{json,txt}` in `--out`. It inventories installed apps via the
+uninstall registry (one fixed PowerShell call, no network) and buckets them —
+native on Linux / has an equivalent / web-only / will NOT work / unknown — plus
+games blocked by kernel anti-cheat (Valorant, Fortnite, ...), hardware notes
+(NVIDIA driver step, WiFi adapters that may need extra drivers), and BitLocker
+status (a blocking warning when ON). Pass `--manifest` from a scan to also
+cross-reference OneDrive placeholders and detected games. It never blocks the
+journey and only ever runs on Windows.
 
 ### 1. Scan (Windows)
 
@@ -42,7 +60,10 @@ external drive's free space. Classification is: explicit KEEP mappings first
 (e.g. `Documents` -> `~/Documents`, `.ssh` -> `~/.ssh`), then RECREATE directory
 matches (`node_modules`, `target`, ...), then SKIP rules (most of `AppData`,
 `Thumbs.db`, `*.tmp`, ...), and otherwise KEEP only inside mapped top-level
-folders.
+folders. OneDrive "Files On-Demand" placeholders (online-only stubs) are flagged
+per file in `manifest.json` and called out loudly in `report.txt` — set them to
+"Always keep on this device" and re-run the scan so they are real before
+staging.
 
 ### 2. Stage to the external drive (Windows)
 
@@ -52,6 +73,9 @@ osmosis-windows-x86_64.exe stage --manifest .\osmosis-output\manifest.json --sta
 
 Copies every keeper to `<staging>/osmosis-stage/`, hash-verifying each file as
 it goes, and is resumable — re-running skips what is already staged and correct.
+Files that are still online-only cloud placeholders at stage time are NEVER
+staged as successes: they are listed under `SKIPPED (PLACEHOLDER ...)`, the
+report ends with `STAGING IS INCOMPLETE`, and the exit code is 2.
 
 ### 3. Install Linux (Mint, Ubuntu, Debian, Fedora, or Arch)
 
@@ -132,7 +156,8 @@ personal, least general part of the tool — extending it to arbitrary games is
 future work. A desktop GUI (`osmosis-gui`, downloadable above) wraps the same
 commands as a click-through wizard; the CLI remains the source of truth (see
 `docs/UI_PLAN.md`). There is no dual-boot support and no automatic
-partitioning.
+partitioning. The preflight verdicts come from a curated built-in table, not a
+live database: "unknown" means "check manually", not "safe".
 
 ## Development
 

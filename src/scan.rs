@@ -6,6 +6,7 @@
 use crate::classify::{classify_file, is_recreate_dir, normalize_rel, Class};
 use crate::config::Config;
 use crate::model::*;
+use crate::placeholder::{is_placeholder_attributes, onedrive_in_scan};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -179,6 +180,25 @@ pub fn run_scan(
     out: &Path,
     staging: Option<&Path>,
 ) -> Result<ScanResult, String> {
+    run_scan_with_attrs(
+        root,
+        cfg,
+        out,
+        staging,
+        &crate::placeholder::file_attributes,
+    )
+}
+
+/// Same as `run_scan`, but the Windows file-attribute read is injected, so
+/// fixture tests can simulate OneDrive placeholder stubs on any platform.
+/// `attrs(path)` returns the raw `dwFileAttributes` (Windows) or `None`.
+pub fn run_scan_with_attrs(
+    root: &Path,
+    cfg: &Config,
+    out: &Path,
+    staging: Option<&Path>,
+    attrs: &dyn Fn(&Path) -> Option<u32>,
+) -> Result<ScanResult, String> {
     if !root.is_dir() {
         return Err(format!("scan root is not a directory: {}", root.display()));
     }
@@ -205,6 +225,10 @@ pub fn run_scan(
     let mut errors: Vec<ScanError> = Vec::new();
     let mut pending_repos: Vec<(PathBuf, String)> = Vec::new(); // (abs path, rel path of repo root)
     let mut git_bytes: std::collections::HashMap<String, u64> = std::collections::HashMap::new(); // rel path of .git -> bytes
+    let mut placeholders = Placeholders {
+        onedrive_detected: onedrive_in_scan(&root),
+        ..Placeholders::default()
+    };
 
     let mut it = WalkDir::new(&root).follow_links(false).into_iter();
     let mut scanned: u64 = 0;
@@ -280,6 +304,8 @@ pub fn run_scan(
         }
 
         let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        // live placeholder check (Windows attribute bits; None elsewhere => real)
+        let placeholder = attrs(path).map(is_placeholder_attributes).unwrap_or(false);
         match classify_file(&rel, cfg) {
             Class::Keep {
                 linux_dest,
@@ -293,6 +319,11 @@ pub fn run_scan(
                 } else {
                     (None, "deferred_large_file".to_string())
                 };
+                if placeholder {
+                    placeholders.count += 1;
+                    placeholders.bytes += size;
+                    placeholders.paths.push(rel.clone());
+                }
                 entries.push(Entry {
                     relative_path: rel.clone(),
                     size_bytes: size,
@@ -300,6 +331,7 @@ pub fn run_scan(
                     sensitive,
                     hash,
                     hash_status,
+                    placeholder,
                 });
                 totals.keep_files += 1;
                 totals.keep_bytes += size;
@@ -336,6 +368,7 @@ pub fn run_scan(
         keep_dirs,
         repos,
         errors,
+        placeholders,
     };
 
     let summary = crate::report::build_summary(&manifest, staging);
