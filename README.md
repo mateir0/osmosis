@@ -16,8 +16,11 @@ Grab the prebuilt binaries from the
 
 - **Windows** (for the scan + stage steps): `osmosis-windows-x86_64.exe`
 - **Linux** (for the import + setup + games steps): `osmosis-linux-x86_64`
+- **Desktop GUI** (no terminal needed — same steps as a click-through wizard):
+  `osmosis-gui-windows-x86_64.exe` and `osmosis-gui-linux-x86_64`
 
 Or build from source with `cargo build --release` (see Development below).
+The GUI is a second binary, `osmosis-gui`, built from the same crate.
 
 ## The journey
 
@@ -120,8 +123,10 @@ switch** (65,288 files imported and hash-verified, games playable in Lutris).
 The target distribution is Linux Mint Cinnamon; other distros are untested.
 The games step ships a fixed built-in table of 5 games and is the most
 personal, least general part of the tool — extending it to arbitrary games is
-future work. There is no GUI yet (see `docs/UI_PLAN.md` for the plan), no
-dual-boot support, and no automatic partitioning.
+future work. A desktop GUI (`osmosis-gui`, downloadable above) wraps the same
+commands as a click-through wizard; the CLI remains the source of truth (see
+`docs/UI_PLAN.md`). There is no dual-boot support and no automatic
+partitioning.
 
 ## Development
 

@@ -20,7 +20,7 @@
 //!     deleted or modified;
 //!   * nothing is launched — registration only.
 
-use crate::setup::{DownloadRecord, Runner, SystemRunner, SETUP_DIR_NAME};
+use crate::setup::{DownloadRecord, Runner, RunnerEvent, SystemRunner, SETUP_DIR_NAME};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -1221,11 +1221,20 @@ pub fn run_games_with(
 
     let mut games = Vec::new();
     for def in &GAMES {
+        runner.on_event(&RunnerEvent::Start {
+            id: def.slug.to_string(),
+            title: def.name.to_string(),
+        });
         let report = match def.kind {
             GameKind::Wine => process_wine_game(runner, &mut ctx, def, dry_run),
             GameKind::Installer => process_batman(runner, &mut ctx, def, dry_run),
             GameKind::Native => process_minecraft(runner, &mut ctx, def, dry_run),
         };
+        runner.on_event(&RunnerEvent::Finish {
+            id: report.slug.clone(),
+            status: report.status.clone(),
+            detail: report.detail.clone(),
+        });
         games.push(report);
     }
 

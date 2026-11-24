@@ -24,16 +24,25 @@ jobs:
       - name: Build
         run: cargo build --release
 
-      - name: Stage binary
+      - name: Stage binaries
         run: |
           cp target/release/osmosis osmosis-linux-x86_64
-          chmod +x osmosis-linux-x86_64
+          cp target/release/osmosis-gui osmosis-gui-linux-x86_64
+          chmod +x osmosis-linux-x86_64 osmosis-gui-linux-x86_64
 
-      - name: Upload binary
+      - name: Upload CLI binary
         uses: actions/upload-artifact@v4
         with:
           name: osmosis-linux-x86_64
           path: osmosis-linux-x86_64
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload GUI binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: osmosis-gui-linux-x86_64
+          path: osmosis-gui-linux-x86_64
           if-no-files-found: error
           retention-days: 7
 
@@ -49,14 +58,24 @@ jobs:
       - name: Build
         run: cargo build --release
 
-      - name: Stage binary
-        run: Copy-Item -Path target\release\osmosis.exe -Destination osmosis-windows-x86_64.exe
+      - name: Stage binaries
+        run: |
+          Copy-Item -Path target\release\osmosis.exe -Destination osmosis-windows-x86_64.exe
+          Copy-Item -Path target\release\osmosis-gui.exe -Destination osmosis-gui-windows-x86_64.exe
 
-      - name: Upload binary
+      - name: Upload CLI binary
         uses: actions/upload-artifact@v4
         with:
           name: osmosis-windows-x86_64.exe
           path: osmosis-windows-x86_64.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload GUI binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: osmosis-gui-windows-x86_64.exe
+          path: osmosis-gui-windows-x86_64.exe
           if-no-files-found: error
           retention-days: 7
 
@@ -81,3 +100,5 @@ jobs:
           files: |
             dist/osmosis-linux-x86_64
             dist/osmosis-windows-x86_64.exe
+            dist/osmosis-gui-linux-x86_64
+            dist/osmosis-gui-windows-x86_64.exe

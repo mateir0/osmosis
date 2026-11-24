@@ -88,13 +88,38 @@ impl CommandOutput {
     }
 }
 
+/// A progress event emitted at step/command boundaries while a run is in
+/// flight. The default `Runner::on_event` is a no-op, so existing runners and
+/// tests are unaffected; the GUI runner forwards these to the UI thread.
+#[derive(Debug, Clone)]
+pub enum RunnerEvent {
+    /// A named unit of work (setup step id or game slug) is starting.
+    Start { id: String, title: String },
+    /// A named unit of work finished; `status` mirrors the report status.
+    Finish {
+        id: String,
+        status: String,
+        detail: String,
+    },
+    /// An external command was spawned as a fixed argv array.
+    Command { argv: Vec<String> },
+}
+
 /// The single abstraction every external command goes through. Detect queries
 /// use `output`; state-changing commands use the default `run` (which fails on
 /// a non-zero exit). Tests supply a fake implementation.
 pub trait Runner {
     fn output(&self, argv: &[&str]) -> Result<CommandOutput, String>;
 
+    /// Progress hook (additive, default no-op). Engines call this at step and
+    /// command boundaries so a UI can stream progress without changing any
+    /// decision logic.
+    fn on_event(&self, _event: &RunnerEvent) {}
+
     fn run(&self, argv: &[&str]) -> Result<(), String> {
+        self.on_event(&RunnerEvent::Command {
+            argv: argv.iter().map(|s| (*s).to_string()).collect(),
+        });
         let out = self.output(argv)?;
         if out.status == 0 {
             Ok(())
@@ -798,6 +823,10 @@ fn verify_step(kind: StepKind, r: &dyn Runner, ctx: &Ctx) -> Result<String, Stri
 }
 
 fn execute_step(def: &StepDef, r: &dyn Runner, ctx: &mut Ctx, dry_run: bool) -> StepReport {
+    r.on_event(&RunnerEvent::Start {
+        id: def.id.to_string(),
+        title: def.title.to_string(),
+    });
     let detect = detect_step(def.kind, r, ctx);
     let (status, detail) = match detect {
         Detect::Done(d) => ("skipped-already", d),
@@ -829,12 +858,18 @@ fn execute_step(def: &StepDef, r: &dyn Runner, ctx: &mut Ctx, dry_run: bool) -> 
             }
         }
     };
-    StepReport {
+    let report = StepReport {
         id: def.id.to_string(),
         title: def.title.to_string(),
         status: status.to_string(),
         detail,
-    }
+    };
+    r.on_event(&RunnerEvent::Finish {
+        id: report.id.clone(),
+        status: report.status.clone(),
+        detail: report.detail.clone(),
+    });
+    report
 }
 
 fn assemble_followups(
