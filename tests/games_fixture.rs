@@ -4,6 +4,7 @@
 //! real `pga.db` are created inside temp fixture dirs, so the whole decision
 //! tree runs on Windows without touching the real system.
 
+use osmosis::distro::Distro;
 use osmosis::games::{run_games_with, GameReport, GamesOutcome, GamesReport};
 use osmosis::setup::{CommandOutput, Runner};
 use rusqlite::Connection;
@@ -277,7 +278,7 @@ fn run(fx: &Fixture, world: World, dry_run: bool) -> (Fake, GamesOutcome) {
 
 fn run_at(fx: &Fixture, root: &Path, world: World, dry_run: bool) -> (Fake, GamesOutcome) {
     let fake = Fake::new(world);
-    let out = run_games_with(&fake, &fx.home(), root, dry_run, &fx.work())
+    let out = run_games_with(&fake, &fx.home(), root, dry_run, &fx.work(), Distro::Mint)
         .expect("games must not hard-fail on a valid fixture");
     (fake, out)
 }
@@ -891,8 +892,15 @@ fn refuses_without_lutris() {
     let mut w = World::good();
     w.lutris = false;
     let fake = Fake::new(w);
-    let err = run_games_with(&fake, &fx.home(), &fx.drive(), false, &fx.work())
-        .expect_err("must refuse without lutris");
+    let err = run_games_with(
+        &fake,
+        &fx.home(),
+        &fx.drive(),
+        false,
+        &fx.work(),
+        Distro::Mint,
+    )
+    .expect_err("must refuse without lutris");
     assert!(err.contains("run osmosis setup first"), "{}", err);
 }
 
@@ -901,8 +909,15 @@ fn refuses_without_a_wine_runner() {
     let fx = Fixture::new();
     fx.make_db();
     let fake = Fake::new(World::good());
-    let err = run_games_with(&fake, &fx.home(), &fx.drive(), false, &fx.work())
-        .expect_err("must refuse without a runner");
+    let err = run_games_with(
+        &fake,
+        &fx.home(),
+        &fx.drive(),
+        false,
+        &fx.work(),
+        Distro::Mint,
+    )
+    .expect_err("must refuse without a runner");
     assert!(err.contains("run osmosis setup first"), "{}", err);
 }
 
@@ -916,6 +931,7 @@ fn missing_games_root_is_a_hard_refusal() {
         &fx.dir.join("not-mounted"),
         false,
         &fx.work(),
+        Distro::Mint,
     )
     .expect_err("must refuse a missing games root");
     assert!(err.contains("not a directory"), "{}", err);

@@ -6,6 +6,7 @@
 
 pub mod classify;
 pub mod config;
+pub mod distro;
 pub mod games;
 pub mod gui;
 pub mod importer;
@@ -16,6 +17,7 @@ pub mod setup;
 pub mod stage;
 
 pub use config::Config;
+pub use distro::{detect as detect_distro, profile_for, Distro, DistroProfile};
 pub use games::{
     games_table, run_games, run_games_with, GameDef, GameKind, GameReport, GamesOutcome,
     GamesReport,

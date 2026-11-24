@@ -1,7 +1,7 @@
 //! Screen enumeration and navigation. One screen per CLI phase; which screens
 //! appear depends on the platform build, matching docs/UI_PLAN.md:
 //! scan + stage on the Windows binary, import + setup + games on the Linux
-//! binary, with the "Install Mint" interstitial bridging the two.
+//! binary, with the "Install Linux" interstitial bridging the two.
 
 use crate::gui::runner::JobKind;
 
@@ -21,7 +21,7 @@ impl Screen {
         match self {
             Screen::Scan => "1. Scan",
             Screen::Stage => "2. Stage",
-            Screen::Install => "3. Install Mint",
+            Screen::Install => "3. Install Linux",
             Screen::Import => "4. Import",
             Screen::Setup => "5. Setup",
             Screen::Games => "6. Games",
@@ -41,8 +41,9 @@ impl Screen {
                               each file. Resumable: re-running skips what is already correct."
             }
             Screen::Install => {
-                "OSmosis never touches partitions. Create a Linux Mint Cinnamon \
-                                USB installer, install it, then come back here."
+                "OSmosis never touches partitions. Create a USB installer for a \
+                                 supported distro (Linux Mint, Ubuntu, Debian, Fedora, Arch \
+                                 Linux), install it, then come back here."
             }
             Screen::Import => {
                 "Unpacks the staged tree into your home directory, hash-verifying \

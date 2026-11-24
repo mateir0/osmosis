@@ -4,6 +4,7 @@
 //! whole step engine (detect -> decide -> run -> verify) runs on Windows
 //! without touching the real system. Only fixture temp dirs are written.
 
+use osmosis::distro::Distro;
 use osmosis::setup::{
     run_setup_with, CommandOutput, Runner, SetupOutcome, SetupReport, StepReport,
 };
@@ -435,7 +436,7 @@ impl Drop for Fixture {
 
 fn run(fx: &Fixture, world: World, dry_run: bool) -> (Fake, SetupOutcome) {
     let fake = Fake::new(world);
-    let out = run_setup_with(&fake, &fx.home(), dry_run, &fx.work())
+    let out = run_setup_with(&fake, &fx.home(), dry_run, &fx.work(), Distro::Mint)
         .expect("setup must not hard-fail on a valid fixture");
     (fake, out)
 }
@@ -544,8 +545,14 @@ fn one_failed_step_still_runs_later_steps_and_exits_2() {
 fn missing_home_is_a_hard_refusal() {
     let fx = Fixture::new();
     let fake = Fake::new(World::nothing());
-    let err = run_setup_with(&fake, &fx.dir.join("does-not-exist"), false, &fx.work())
-        .expect_err("a missing home must be refused");
+    let err = run_setup_with(
+        &fake,
+        &fx.dir.join("does-not-exist"),
+        false,
+        &fx.work(),
+        Distro::Mint,
+    )
+    .expect_err("a missing home must be refused");
     assert!(err.contains("not a directory"), "{}", err);
 }
 

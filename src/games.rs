@@ -20,6 +20,7 @@
 //!     deleted or modified;
 //!   * nothing is launched — registration only.
 
+use crate::distro::{self, Distro, DistroProfile};
 use crate::setup::{DownloadRecord, Runner, RunnerEvent, SystemRunner, SETUP_DIR_NAME};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -177,6 +178,7 @@ struct Ctx<'a> {
     work: &'a Path,
     wine: &'a Path,
     runner_name: &'a str,
+    profile: &'static DistroProfile,
     downloads: Vec<DownloadRecord>,
     followups: Vec<String>,
     registration_deferred: bool,
@@ -836,7 +838,7 @@ fn process_minecraft(r: &dyn Runner, ctx: &mut Ctx, def: &GameDef, dry_run: bool
     if dry_run {
         let java_note = match &java {
             Some(v) => format!("java present ({})", v),
-            None => "would install openjdk-21-jre".to_string(),
+            None => format!("would install {}", ctx.profile.java_package),
         };
         return game_report(
             def,
@@ -856,16 +858,13 @@ fn process_minecraft(r: &dyn Runner, ctx: &mut Ctx, def: &GameDef, dry_run: bool
     }
 
     if java.is_none() {
-        if let Err(e) = r.run(&crate::setup::sudo_apt_get(&[
-            "install",
-            "-y",
-            "openjdk-21-jre",
-        ])) {
+        let java_pkg = ctx.profile.java_package;
+        if let Err(e) = r.run(&ctx.profile.install_argv(&[java_pkg])) {
             return game_report(
                 def,
                 ctx,
                 "failed",
-                format!("java missing and openjdk-21-jre install failed: {}", e),
+                format!("java missing and {} install failed: {}", java_pkg, e),
                 Found {
                     exe: Some(&jar),
                     folder: None,
@@ -965,7 +964,7 @@ fn process_minecraft(r: &dyn Runner, ctx: &mut Ctx, def: &GameDef, dry_run: bool
 
     let java_note = match &java {
         Some(v) => format!("java present ({})", v),
-        None => "openjdk-21-jre installed".to_string(),
+        None => format!("{} installed", ctx.profile.java_package),
     };
     game_report(
         def,
@@ -1021,6 +1020,7 @@ fn now_string() -> String {
 struct ReportInput<'a> {
     home: &'a Path,
     games_root: &'a Path,
+    os: &'a str,
     dry_run: bool,
     runner: &'a str,
     wine: &'a Path,
@@ -1035,6 +1035,7 @@ fn assemble_report(input: ReportInput) -> GamesReport {
     let ReportInput {
         home,
         games_root,
+        os,
         dry_run,
         runner,
         wine,
@@ -1066,7 +1067,7 @@ fn assemble_report(input: ReportInput) -> GamesReport {
         created_at: now_string(),
         home: home.to_string_lossy().into_owned(),
         games_root: games_root.to_string_lossy().into_owned(),
-        os: std::env::consts::OS.to_string(),
+        os: os.to_string(),
         dry_run,
         runner: runner.to_string(),
         wine: wine.to_string_lossy().into_owned(),
@@ -1172,15 +1173,22 @@ fn write_report_files(dir: &Path, report: &GamesReport, summary: &str) -> Result
 
 // ------------------------------------------------------------------- entry --
 
-/// Engine shared by the real command and tests. No OS gate here so the whole
-/// decision tree stays testable on Windows.
+/// Engine shared by the real command and tests. The distro is a parameter
+/// (never detected from the host here) so tests are hermetic on any CI
+/// runner; `run_games` detects it. An unsupported distro is a hard `Err`
+/// returned BEFORE any runner command is issued.
 pub fn run_games_with(
     runner: &dyn Runner,
     home: &Path,
     games_root: &Path,
     dry_run: bool,
     work: &Path,
+    distro: Distro,
 ) -> Result<GamesOutcome, String> {
+    let profile = match distro::profile_for(&distro) {
+        Some(p) => p,
+        None => return Err(distro::refusal(distro.id())),
+    };
     if !home.is_dir() {
         return Err(format!(
             "target home is not a directory: {}",
@@ -1213,6 +1221,7 @@ pub fn run_games_with(
         work,
         wine: &wine,
         runner_name: &runner_name,
+        profile,
         downloads: Vec::new(),
         followups: Vec::new(),
         registration_deferred: false,
@@ -1241,6 +1250,7 @@ pub fn run_games_with(
     let report = assemble_report(ReportInput {
         home,
         games_root,
+        os: distro.id(),
         dry_run,
         runner: &runner_name,
         wine: &wine,
@@ -1266,7 +1276,8 @@ pub fn run_games_with(
     })
 }
 
-/// `osmosis games --games-root <dir> [--home <dir>] [--dry-run]`: Linux-only.
+/// `osmosis games --games-root <dir> [--home <dir>] [--dry-run]`: Linux-only,
+/// and only on the five supported distros.
 pub fn run_games(games_root: &Path, home: &Path, dry_run: bool) -> Result<GamesOutcome, String> {
     if !cfg!(target_os = "linux") {
         return Err(format!(
@@ -1274,9 +1285,10 @@ pub fn run_games(games_root: &Path, home: &Path, dry_run: bool) -> Result<GamesO
             std::env::consts::OS
         ));
     }
+    let distro = distro::detect()?;
     let runner = SystemRunner;
     let work = std::env::temp_dir().join(format!("osmosis-games-{}", std::process::id()));
-    run_games_with(&runner, home, games_root, dry_run, &work)
+    run_games_with(&runner, home, games_root, dry_run, &work, distro)
 }
 
 #[cfg(test)]

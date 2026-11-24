@@ -102,7 +102,8 @@ pub fn start_setup(home: String, dry_run: bool) -> Result<JobHandle, String> {
     Ok(spawn(JobKind::Setup, move |tx| {
         let runner = GuiRunner { tx: tx.clone() };
         let work = std::env::temp_dir().join(format!("osmosis-gui-setup-{}", std::process::id()));
-        let out = crate::setup::run_setup_with(&runner, &home, dry_run, &work)?;
+        let distro = crate::distro::detect()?;
+        let out = crate::setup::run_setup_with(&runner, &home, dry_run, &work, distro)?;
         Ok(JobSummary {
             kind: JobKind::Setup,
             ok: out.exit_code == 0,
@@ -120,7 +121,9 @@ pub fn start_games(games_root: String, home: String, dry_run: bool) -> Result<Jo
     Ok(spawn(JobKind::Games, move |tx| {
         let runner = GuiRunner { tx: tx.clone() };
         let work = std::env::temp_dir().join(format!("osmosis-gui-games-{}", std::process::id()));
-        let out = crate::games::run_games_with(&runner, &home, &games_root, dry_run, &work)?;
+        let distro = crate::distro::detect()?;
+        let out =
+            crate::games::run_games_with(&runner, &home, &games_root, dry_run, &work, distro)?;
         Ok(JobSummary {
             kind: JobKind::Games,
             ok: out.exit_code == 0,

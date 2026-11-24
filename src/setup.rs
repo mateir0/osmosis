@@ -1,6 +1,8 @@
-//! The setup step runner (slice 4): `osmosis setup` turns a fresh Linux Mint
-//! (post-import) into the working machine. Linux-only, unprivileged: every
-//! step escalates per-command through `sudo` in a fixed argv array.
+//! The setup step runner (slice 4 + slice 8): `osmosis setup` turns a fresh
+//! install of a supported distro (Linux Mint, Ubuntu, Debian, Fedora, Arch
+//! Linux — detected from /etc/os-release) into the working machine.
+//! Linux-only, unprivileged: every step escalates per-command through `sudo`
+//! in a fixed argv array chosen by the distro profile (src/distro.rs).
 //!
 //! SAFETY RULE: every external command is a fixed argv array executed through
 //! one `Runner` abstraction — no `sh -c` with interpolated strings anywhere
@@ -9,6 +11,10 @@
 //! only then executed. Nothing imported by `osmosis import` is edited.
 //! No reboot is ever executed — only flagged in the report.
 
+use crate::distro::profiles::{
+    ChromePlan, GhPlan, NvidiaPlan, VsCodePlan, CHROME_RPM_URL, DEBIAN_NONFREE_HINT, VSCODE_RPM_URL,
+};
+use crate::distro::{self, Distro, DistroProfile};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,16 +36,6 @@ pub fn sudo_apt_get<'a>(args: &[&'a str]) -> Vec<&'a str> {
     v.extend_from_slice(args);
     v
 }
-
-const APT_BASE_PACKAGES: &[&str] = &[
-    "git",
-    "curl",
-    "build-essential",
-    "ntfs-3g",
-    "software-properties-common",
-    "fonts-noto",
-    "fonts-liberation",
-];
 
 const NVM_VERSION: &str = "v0.40.1";
 const NVM_URL: &str = "https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh";
@@ -231,7 +227,7 @@ struct StepDef {
 const STEP_DEFS: [StepDef; 9] = [
     StepDef {
         id: "base",
-        title: "Base system packages (apt)",
+        title: "Base system packages",
         kind: StepKind::Base,
     },
     StepDef {
@@ -301,16 +297,18 @@ impl RunNote {
 struct Ctx {
     home: PathBuf,
     work: PathBuf,
+    profile: &'static DistroProfile,
     downloads: Vec<DownloadRecord>,
     followups: Vec<String>,
     reboot_required: bool,
 }
 
 impl Ctx {
-    fn new(home: &Path, work: &Path) -> Ctx {
+    fn new(home: &Path, work: &Path, profile: &'static DistroProfile) -> Ctx {
         Ctx {
             home: home.to_path_buf(),
             work: work.to_path_buf(),
+            profile,
             downloads: Vec::new(),
             followups: Vec::new(),
             reboot_required: false,
@@ -322,7 +320,7 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").trim().to_string()
 }
 
-fn version_of(r: &dyn Runner, argv: &[&str]) -> Option<String> {
+pub(crate) fn version_of(r: &dyn Runner, argv: &[&str]) -> Option<String> {
     match r.output(argv) {
         Ok(o) if o.status == 0 => {
             let line = first_line(&o.stdout);
@@ -333,13 +331,6 @@ fn version_of(r: &dyn Runner, argv: &[&str]) -> Option<String> {
             }
         }
         _ => None,
-    }
-}
-
-fn package_installed(r: &dyn Runner, pkg: &str) -> bool {
-    match r.output(&["dpkg-query", "-W", "-f=${Status}", pkg]) {
-        Ok(o) => o.status == 0 && o.stdout.contains("install ok installed"),
-        Err(_) => false,
     }
 }
 
@@ -451,17 +442,20 @@ fn set_executable(_path: &Path) -> std::io::Result<()> {
 fn detect_step(kind: StepKind, r: &dyn Runner, ctx: &Ctx) -> Detect {
     match kind {
         StepKind::Base => {
+            let profile = ctx.profile;
             let mut missing: Vec<&str> = Vec::new();
             for bin in ["git", "curl", "gcc"] {
                 if version_of(r, &[bin, "--version"]).is_none() {
                     missing.push(bin);
                 }
             }
-            if !package_installed(r, "fonts-noto") {
-                missing.push("fonts-noto");
+            if !profile.package_installed(r, profile.fonts_package) {
+                missing.push(profile.fonts_package);
             }
-            if !(package_installed(r, "mint-meta-codecs")
-                || package_installed(r, "ubuntu-restricted-extras"))
+            if !profile
+                .codecs_tries
+                .iter()
+                .any(|pkgs| pkgs.iter().all(|p| profile.package_installed(r, p)))
             {
                 missing.push("codecs");
             }
@@ -513,9 +507,9 @@ fn detect_step(kind: StepKind, r: &dyn Runner, ctx: &Ctx) -> Detect {
             Some(v) => Detect::Done(v),
             None => Detect::Needed("code not found".to_string()),
         },
-        StepKind::Chrome => match version_of(r, &["google-chrome", "--version"]) {
+        StepKind::Chrome => match version_of(r, &[ctx.profile.chrome_binary, "--version"]) {
             Some(v) => Detect::Done(v),
-            None => Detect::Needed("google-chrome not found".to_string()),
+            None => Detect::Needed(format!("{} not found", ctx.profile.chrome_binary)),
         },
         StepKind::OpenCode => {
             let bin = ctx.home.join(".opencode/bin/opencode").is_file();
@@ -556,83 +550,151 @@ fn parse_recommended_driver(text: &str) -> Option<String> {
 fn run_step(kind: StepKind, r: &dyn Runner, ctx: &mut Ctx) -> Result<RunNote, String> {
     match kind {
         StepKind::Base => {
-            r.run(&sudo_apt_get(&["update"]))?;
-            let mut argv = sudo_apt_get(&["install", "-y"]);
-            argv.extend_from_slice(APT_BASE_PACKAGES);
-            r.run(&argv)?;
-            if r.run(&sudo_apt_get(&["install", "-y", "mint-meta-codecs"]))
-                .is_err()
-            {
-                r.run(&sudo_apt_get(&[
-                    "install",
-                    "-y",
-                    "ubuntu-restricted-extras",
-                ]))?;
+            let profile = ctx.profile;
+            if let Some(up) = profile.update_argv() {
+                r.run(&up)?;
             }
-            Ok(RunNote::new("base packages installed"))
-        }
-        StepKind::Nvidia => {
-            let present = r
-                .output(&["which", "ubuntu-drivers"])
-                .map(|o| o.status == 0)
-                .unwrap_or(false);
-            if !present {
-                return Err(
-                    "ubuntu-drivers is not available; install the NVIDIA driver manually (Driver Manager)"
-                        .to_string(),
-                );
+            // RPM Fusion first on Fedora, before any other package.
+            let fusion = profile.rpm_fusion_install_argv(r)?;
+            for argv in &fusion {
+                let refs: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
+                r.run(&refs)?;
             }
-            if r.run(&["sudo", "ubuntu-drivers", "autoinstall"]).is_err() {
-                // older ubuntu-drivers without `autoinstall`: parse the
-                // recommended driver and install it explicitly.
-                let dev = r.output(&["ubuntu-drivers", "devices"])?;
-                if dev.status != 0 {
-                    return Err(format!(
-                        "ubuntu-drivers devices failed ({}): {}",
-                        dev.status,
-                        dev.stderr.trim()
-                    ));
+            let prefix_note = if fusion.is_empty() {
+                String::new()
+            } else {
+                "RPM Fusion enabled; ".to_string()
+            };
+            r.run(&profile.install_argv(profile.base_packages))?;
+            for (i, pkgs) in profile.codecs_tries.iter().enumerate() {
+                match r.run(&profile.install_argv(pkgs)) {
+                    Ok(()) => break,
+                    Err(e) => {
+                        if i + 1 == profile.codecs_tries.len() {
+                            if profile.codecs_nonfree_hint {
+                                return Err(DEBIAN_NONFREE_HINT.to_string());
+                            }
+                            return Err(e);
+                        }
+                    }
                 }
-                let driver = parse_recommended_driver(&dev.stdout).ok_or_else(|| {
-                    "cannot determine the recommended NVIDIA driver from ubuntu-drivers devices"
-                        .to_string()
-                })?;
-                r.run(&sudo_apt_get(&["install", "-y", &driver]))?;
             }
-            let mut note = RunNote::new("NVIDIA driver installed");
-            note.reboot = true;
-            Ok(note)
+            Ok(RunNote::new(format!(
+                "{}base packages installed",
+                prefix_note
+            )))
         }
-        StepKind::Gh => {
-            let keyring = ctx.work.join("githubcli-archive-keyring.gpg");
-            fetch(r, ctx, "gh", GH_KEYRING_URL, &keyring)?;
-            let k = keyring.to_string_lossy().into_owned();
-            r.run(&[
-                "sudo",
-                "install",
-                "-m",
-                "0644",
-                &k,
-                "/usr/share/keyrings/githubcli-archive-keyring.gpg",
-            ])?;
-            let sources = ctx.work.join("github-cli.list");
-            fs::write(&sources, format!("{}\n", GH_SOURCES_ENTRY))
-                .map_err(|e| format!("cannot write {}: {}", sources.display(), e))?;
-            let s = sources.to_string_lossy().into_owned();
-            r.run(&[
-                "sudo",
-                "install",
-                "-m",
-                "0644",
-                &s,
-                "/etc/apt/sources.list.d/github-cli.list",
-            ])?;
-            r.run(&sudo_apt_get(&["update"]))?;
-            r.run(&sudo_apt_get(&["install", "-y", "gh"]))?;
-            Ok(RunNote::new(
-                "GitHub CLI installed from the official apt repo",
-            ))
-        }
+        StepKind::Nvidia => match ctx.profile.nvidia {
+            NvidiaPlan::UbuntuDrivers => {
+                let present = r
+                    .output(&["which", "ubuntu-drivers"])
+                    .map(|o| o.status == 0)
+                    .unwrap_or(false);
+                if !present {
+                    return Err(
+                        "ubuntu-drivers is not available; install the NVIDIA driver manually (Driver Manager)"
+                            .to_string(),
+                    );
+                }
+                if r.run(&["sudo", "ubuntu-drivers", "autoinstall"]).is_err() {
+                    // older ubuntu-drivers without `autoinstall`: parse the
+                    // recommended driver and install it explicitly.
+                    let dev = r.output(&["ubuntu-drivers", "devices"])?;
+                    if dev.status != 0 {
+                        return Err(format!(
+                            "ubuntu-drivers devices failed ({}): {}",
+                            dev.status,
+                            dev.stderr.trim()
+                        ));
+                    }
+                    let driver = parse_recommended_driver(&dev.stdout).ok_or_else(|| {
+                        "cannot determine the recommended NVIDIA driver from ubuntu-drivers devices"
+                            .to_string()
+                    })?;
+                    r.run(&ctx.profile.install_argv(&[&driver]))?;
+                }
+                let mut note = RunNote::new("NVIDIA driver installed");
+                note.reboot = true;
+                Ok(note)
+            }
+            NvidiaPlan::AptPackage {
+                package,
+                nonfree_hint,
+            } => {
+                if let Err(e) = r.run(&ctx.profile.install_argv(&[package])) {
+                    if nonfree_hint {
+                        return Err(DEBIAN_NONFREE_HINT.to_string());
+                    }
+                    return Err(e);
+                }
+                let mut note = RunNote::new(format!("{} installed", package));
+                note.reboot = true;
+                Ok(note)
+            }
+            NvidiaPlan::Akmod => {
+                r.run(&ctx.profile.install_argv(&["akmod-nvidia"]))?;
+                let mut note = RunNote::new(
+                    "akmod-nvidia installed; the driver builds as a kernel module — reboot required before it is active",
+                );
+                note.reboot = true;
+                Ok(note)
+            }
+            NvidiaPlan::Pacman => {
+                r.run(&ctx.profile.install_argv(&["nvidia", "nvidia-utils"]))?;
+                let mut note = RunNote::new("nvidia + nvidia-utils installed");
+                note.reboot = true;
+                note.followups.push(
+                    "on the linux-lts kernel, install nvidia-lts instead of nvidia".to_string(),
+                );
+                Ok(note)
+            }
+        },
+        StepKind::Gh => match ctx.profile.gh {
+            GhPlan::AptRepo => {
+                let keyring = ctx.work.join("githubcli-archive-keyring.gpg");
+                fetch(r, ctx, "gh", GH_KEYRING_URL, &keyring)?;
+                let k = keyring.to_string_lossy().into_owned();
+                r.run(&[
+                    "sudo",
+                    "install",
+                    "-m",
+                    "0644",
+                    &k,
+                    "/usr/share/keyrings/githubcli-archive-keyring.gpg",
+                ])?;
+                let sources = ctx.work.join("github-cli.list");
+                fs::write(&sources, format!("{}\n", GH_SOURCES_ENTRY))
+                    .map_err(|e| format!("cannot write {}: {}", sources.display(), e))?;
+                let s = sources.to_string_lossy().into_owned();
+                r.run(&[
+                    "sudo",
+                    "install",
+                    "-m",
+                    "0644",
+                    &s,
+                    "/etc/apt/sources.list.d/github-cli.list",
+                ])?;
+                if let Some(up) = ctx.profile.update_argv() {
+                    r.run(&up)?;
+                }
+                r.run(&ctx.profile.install_argv(&["gh"]))?;
+                Ok(RunNote::new(
+                    "GitHub CLI installed from the official apt repo",
+                ))
+            }
+            GhPlan::Dnf => {
+                r.run(&ctx.profile.install_argv(&["gh"]))?;
+                Ok(RunNote::new(
+                    "GitHub CLI installed from the official Fedora repos",
+                ))
+            }
+            GhPlan::Pacman => {
+                r.run(&ctx.profile.install_argv(&["github-cli"]))?;
+                Ok(RunNote::new(
+                    "GitHub CLI (github-cli) installed from the Arch repos",
+                ))
+            }
+        },
         StepKind::Node => {
             let script = ctx.work.join("nvm-install.sh");
             fetch(r, ctx, "node", NVM_URL, &script)?;
@@ -651,20 +713,55 @@ fn run_step(kind: StepKind, r: &dyn Runner, ctx: &mut Ctx) -> Result<RunNote, St
             r.run(&["bash", &p, "-y", "--default-toolchain", "stable"])?;
             Ok(RunNote::new("rustup installed with the stable toolchain"))
         }
-        StepKind::VsCode => {
-            let deb = ctx.work.join("vscode.deb");
-            fetch(r, ctx, "vscode", VSCODE_URL, &deb)?;
-            let p = deb.to_string_lossy().into_owned();
-            r.run(&sudo_apt_get(&["install", "-y", &p]))?;
-            Ok(RunNote::new("VS Code .deb installed"))
-        }
-        StepKind::Chrome => {
-            let deb = ctx.work.join("google-chrome.deb");
-            fetch(r, ctx, "chrome", CHROME_URL, &deb)?;
-            let p = deb.to_string_lossy().into_owned();
-            r.run(&sudo_apt_get(&["install", "-y", &p]))?;
-            Ok(RunNote::new("Google Chrome .deb installed"))
-        }
+        StepKind::VsCode => match ctx.profile.vscode {
+            VsCodePlan::Deb => {
+                let deb = ctx.work.join("vscode.deb");
+                fetch(r, ctx, "vscode", VSCODE_URL, &deb)?;
+                let p = deb.to_string_lossy().into_owned();
+                r.run(&ctx.profile.install_argv(&[&p]))?;
+                Ok(RunNote::new("VS Code .deb installed"))
+            }
+            VsCodePlan::Rpm => {
+                let rpm = ctx.work.join("vscode.rpm");
+                fetch(r, ctx, "vscode", VSCODE_RPM_URL, &rpm)?;
+                let p = rpm.to_string_lossy().into_owned();
+                r.run(&ctx.profile.install_argv(&[&p]))?;
+                Ok(RunNote::new("VS Code .rpm installed"))
+            }
+            VsCodePlan::Repo => {
+                r.run(&ctx.profile.install_argv(&["code"]))?;
+                Ok(RunNote::new(
+                    "VS Code open-source build (code) installed from the Arch repos",
+                ))
+            }
+        },
+        StepKind::Chrome => match ctx.profile.chrome {
+            ChromePlan::Deb => {
+                let deb = ctx.work.join("google-chrome.deb");
+                fetch(r, ctx, "chrome", CHROME_URL, &deb)?;
+                let p = deb.to_string_lossy().into_owned();
+                r.run(&ctx.profile.install_argv(&[&p]))?;
+                Ok(RunNote::new("Google Chrome .deb installed"))
+            }
+            ChromePlan::Rpm => {
+                let rpm = ctx.work.join("google-chrome.rpm");
+                fetch(r, ctx, "chrome", CHROME_RPM_URL, &rpm)?;
+                let p = rpm.to_string_lossy().into_owned();
+                r.run(&ctx.profile.install_argv(&[&p]))?;
+                Ok(RunNote::new("Google Chrome .rpm installed"))
+            }
+            ChromePlan::Chromium => {
+                r.run(&ctx.profile.install_argv(&["chromium"]))?;
+                let mut note = RunNote::new(
+                    "Chromium installed; Google Chrome proper is available from the AUR as google-chrome",
+                );
+                note.followups.push(
+                    "install google-chrome from the AUR manually if you want Chrome instead of Chromium (OSmosis never installs an AUR helper)"
+                        .to_string(),
+                );
+                Ok(note)
+            }
+        },
         StepKind::OpenCode => {
             let script = ctx.work.join("opencode-install.sh");
             fetch(r, ctx, "opencode", OPENCODE_INSTALL_URL, &script)?;
@@ -682,7 +779,8 @@ fn run_step(kind: StepKind, r: &dyn Runner, ctx: &mut Ctx) -> Result<RunNote, St
             Ok(note)
         }
         StepKind::Lutris => {
-            r.run(&sudo_apt_get(&["install", "-y", "lutris", "winetricks"]))?;
+            let pkgs = ctx.profile.lutris_packages;
+            r.run(&ctx.profile.install_argv(pkgs))?;
             let rel = resolve_release(r, LUTRIS_API).map_err(|e| {
                 format!(
                     "cannot resolve Wine-GE release: {} ({})",
@@ -722,16 +820,20 @@ fn run_step(kind: StepKind, r: &dyn Runner, ctx: &mut Ctx) -> Result<RunNote, St
 /// or place an AppImage under ~/Applications with a .desktop entry.
 fn install_opencode_desktop(r: &dyn Runner, ctx: &mut Ctx) -> Result<(), String> {
     let rel = resolve_release(r, OPENCODE_API)?;
-    if let Some(asset) = rel
-        .assets
-        .iter()
-        .find(|a| a.name.ends_with(".deb") && !a.name.ends_with(".AppImage"))
-    {
-        let deb = ctx.work.join("opencode.deb");
-        fetch(r, ctx, "opencode", &asset.browser_download_url, &deb)?;
-        let p = deb.to_string_lossy().into_owned();
-        r.run(&sudo_apt_get(&["install", "-y", &p]))?;
-        return Ok(());
+    // Only the apt family installs .deb files; Fedora/Arch fall through to
+    // the AppImage path below.
+    if ctx.profile.uses_apt {
+        if let Some(asset) = rel
+            .assets
+            .iter()
+            .find(|a| a.name.ends_with(".deb") && !a.name.ends_with(".AppImage"))
+        {
+            let deb = ctx.work.join("opencode.deb");
+            fetch(r, ctx, "opencode", &asset.browser_download_url, &deb)?;
+            let p = deb.to_string_lossy().into_owned();
+            r.run(&ctx.profile.install_argv(&[&p]))?;
+            return Ok(());
+        }
     }
     if let Some(asset) = rel.assets.iter().find(|a| a.name.ends_with(".AppImage")) {
         let tmp = ctx.work.join(&asset.name);
@@ -803,8 +905,8 @@ fn verify_step(kind: StepKind, r: &dyn Runner, ctx: &Ctx) -> Result<String, Stri
         }
         StepKind::VsCode => version_of(r, &["code", "--version"])
             .ok_or_else(|| "code --version did not parse".to_string()),
-        StepKind::Chrome => version_of(r, &["google-chrome", "--version"])
-            .ok_or_else(|| "google-chrome --version did not parse".to_string()),
+        StepKind::Chrome => version_of(r, &[ctx.profile.chrome_binary, "--version"])
+            .ok_or_else(|| format!("{} --version did not parse", ctx.profile.chrome_binary)),
         StepKind::OpenCode => version_of(r, &["bash", "-lc", "opencode --version"])
             .ok_or_else(|| "opencode --version did not parse".to_string()),
         StepKind::Lutris => {
@@ -916,6 +1018,7 @@ fn now_string() -> String {
 
 fn assemble_report(
     home: &Path,
+    os: &str,
     dry_run: bool,
     steps: Vec<StepReport>,
     downloads: Vec<DownloadRecord>,
@@ -928,7 +1031,7 @@ fn assemble_report(
         schema_version: 1,
         created_at: now_string(),
         home: home.to_string_lossy().into_owned(),
-        os: std::env::consts::OS.to_string(),
+        os: os.to_string(),
         dry_run,
         reboot_required,
         total_steps: steps.len() as u64,
@@ -1017,14 +1120,21 @@ pub fn build_setup_report_txt(r: &SetupReport) -> String {
     s
 }
 
-/// Engine shared by the real command and tests. No OS gate here so the step
-/// logic stays testable on Windows; `run_setup` adds the Linux-only refusal.
+/// Engine shared by the real command and tests. The distro is a parameter
+/// (never detected from the host here) so tests are hermetic on any CI
+/// runner; `run_setup` detects it. An unsupported distro is a hard `Err`
+/// returned BEFORE any runner command is issued.
 pub fn run_setup_with(
     runner: &dyn Runner,
     home: &Path,
     dry_run: bool,
     work: &Path,
+    distro: Distro,
 ) -> Result<SetupOutcome, String> {
+    let profile = match distro::profile_for(&distro) {
+        Some(p) => p,
+        None => return Err(distro::refusal(distro.id())),
+    };
     if !home.is_dir() {
         return Err(format!(
             "target home is not a directory: {}",
@@ -1042,7 +1152,7 @@ pub fn run_setup_with(
     fs::create_dir_all(work)
         .map_err(|e| format!("cannot create work dir {}: {}", work.display(), e))?;
 
-    let mut ctx = Ctx::new(home, work);
+    let mut ctx = Ctx::new(home, work, profile);
     let mut steps = Vec::new();
     for def in &STEP_DEFS {
         steps.push(execute_step(def, runner, &mut ctx, dry_run));
@@ -1050,6 +1160,7 @@ pub fn run_setup_with(
 
     let report = assemble_report(
         home,
+        distro.id(),
         dry_run,
         steps,
         ctx.downloads.clone(),
@@ -1069,8 +1180,9 @@ pub fn run_setup_with(
     })
 }
 
-/// `osmosis setup [--home <dir>] [--dry-run]`: Linux-only. Refuses (exit 1) on
-/// any other OS and when the home is not writable.
+/// `osmosis setup [--home <dir>] [--dry-run]`: Linux-only, and only on the
+/// five supported distros. Refuses (exit 1) on any other OS/distro and when
+/// the home is not writable.
 pub fn run_setup(home: &Path, dry_run: bool) -> Result<SetupOutcome, String> {
     if !cfg!(target_os = "linux") {
         return Err(format!(
@@ -1078,9 +1190,10 @@ pub fn run_setup(home: &Path, dry_run: bool) -> Result<SetupOutcome, String> {
             std::env::consts::OS
         ));
     }
+    let distro = distro::detect()?;
     let runner = SystemRunner;
     let work = std::env::temp_dir().join(format!("osmosis-setup-{}", std::process::id()));
-    run_setup_with(&runner, home, dry_run, &work)
+    run_setup_with(&runner, home, dry_run, &work, distro)
 }
 
 #[cfg(test)]

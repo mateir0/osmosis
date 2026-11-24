@@ -6,6 +6,11 @@ use crate::gui::{jobs, state::App, widgets};
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     widgets::path_picker(ui, "Target home (--home)", &mut app.setup_home, true);
+    ui.add_space(4.0);
+    let detected = crate::distro::detect()
+        .map(|d| d.display_name())
+        .unwrap_or_else(|e| e);
+    ui.label(format!("Detected distro: {}", detected));
     ui.add_space(6.0);
     if widgets::run_button(ui, app.running(), "Run setup") {
         match jobs::start_setup(app.setup_home.clone(), app.dry_run) {

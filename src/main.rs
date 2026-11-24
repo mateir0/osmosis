@@ -64,8 +64,9 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Turn a fresh Linux Mint into the working machine (Linux-only). Runs
-    /// unprivileged and escalates per command with sudo.
+    /// Turn a fresh install of a supported Linux distro (Linux Mint, Ubuntu,
+    /// Debian, Fedora, Arch Linux — detected from /etc/os-release) into the
+    /// working machine. Linux-only; escalates per command with sudo.
     Setup {
         /// Target home directory. Defaults to the HOME environment variable.
         #[arg(long)]

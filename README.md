@@ -4,7 +4,7 @@
 
 OSmosis is an open-source (GPL-3.0) tool written in Rust that walks you through
 the whole switch: it scans your Windows profile, copies what matters to an
-external drive (hash-verified), restores it onto a fresh Linux Mint install,
+external drive (hash-verified), restores it onto a fresh Linux install,
 turns that install into your working machine, and registers your standalone
 games in Lutris so they are ready to click.
 
@@ -25,7 +25,7 @@ The GUI is a second binary, `osmosis-gui`, built from the same crate.
 ## The journey
 
 Six steps, in order. The first two run on Windows, the last four on the fresh
-Linux Mint machine.
+Linux machine (Linux Mint, Ubuntu, Debian, Fedora, or Arch Linux).
 
 ### 1. Scan (Windows)
 
@@ -53,11 +53,11 @@ osmosis-windows-x86_64.exe stage --manifest .\osmosis-output\manifest.json --sta
 Copies every keeper to `<staging>/osmosis-stage/`, hash-verifying each file as
 it goes, and is resumable — re-running skips what is already staged and correct.
 
-### 3. Install Linux Mint
+### 3. Install Linux (Mint, Ubuntu, Debian, Fedora, or Arch)
 
-This is the one step OSmosis cannot do for you: create a Linux Mint Cinnamon
-USB installer and install it on the target machine, replacing Windows. OSmosis
-never repartitions or touches your disks.
+This is the one step OSmosis cannot do for you: create a USB installer for
+Linux Mint, Ubuntu, Debian, Fedora, or Arch Linux and install it on the target
+machine, replacing Windows. OSmosis never repartitions or touches your disks.
 
 ### 4. Import (Linux)
 
@@ -78,13 +78,18 @@ osmosis-linux-x86_64 setup --dry-run
 osmosis-linux-x86_64 setup
 ```
 
-Idempotent step runner that turns the fresh install into the working machine:
-base apt packages + codecs, NVIDIA driver (when a GPU is present), GitHub CLI,
-Node via nvm + pnpm, Rust via rustup, VS Code, Google Chrome, OpenCode, and
-Lutris + Wine-GE. Runs unprivileged and escalates per command with `sudo`
-(`DEBIAN_FRONTEND=noninteractive` is passed through so nothing can block on an
-interactive prompt). `--dry-run` prints the plan (would-run / already-done /
-not-applicable) and changes nothing. Report:
+Idempotent step runner that turns the fresh install into the working machine.
+The distro is auto-detected from `/etc/os-release` (Linux Mint, Ubuntu,
+Debian, Fedora, and Arch Linux are supported; anything else is refused before
+any command runs) and every package command goes through that distro's
+package manager: `apt` (Mint/Ubuntu/Debian), `dnf` + RPM Fusion (Fedora), or
+`pacman` (Arch). It installs base packages + codecs, the NVIDIA driver (when
+a GPU is present), GitHub CLI, Node via nvm + pnpm, Rust via rustup, VS Code,
+Google Chrome (Chromium on Arch), OpenCode, and Lutris + Wine-GE. Runs
+unprivileged and escalates per command with `sudo`
+(`DEBIAN_FRONTEND=noninteractive` is passed through on apt so nothing can
+block on an interactive prompt). `--dry-run` prints the plan (would-run /
+already-done / not-applicable) and changes nothing. Report:
 `~/osmosis-setup/setup-report.{json,txt}`.
 
 ### 6. Games (Linux)
@@ -120,7 +125,8 @@ These are enforced in the code, not just promised:
 
 OSmosis was built and proven on **one real Windows -> Linux Mint Cinnamon
 switch** (65,288 files imported and hash-verified, games playable in Lutris).
-The target distribution is Linux Mint Cinnamon; other distros are untested.
+Live verification: Mint only. Ubuntu/Debian/Fedora/Arch verified by fixture
+tests only — NOT run on real installs of those distros.
 The games step ships a fixed built-in table of 5 games and is the most
 personal, least general part of the tool — extending it to arbitrary games is
 future work. A desktop GUI (`osmosis-gui`, downloadable above) wraps the same
