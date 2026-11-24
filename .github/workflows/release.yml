@@ -11,7 +11,11 @@ permissions:
 jobs:
   linux:
     name: linux
-    runs-on: ubuntu-latest
+    # ubuntu-22.04 (glibc 2.35): oldest supported Ubuntu LTS base, so the
+    # binaries run on Linux Mint 21/22 and Ubuntu 22.04+. Building on
+    # ubuntu-latest (glibc 2.43) produces binaries that fail with
+    # "version `GLIBC_2.43' not found" on older systems.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -29,6 +33,20 @@ jobs:
           cp target/release/osmosis osmosis-linux-x86_64
           cp target/release/osmosis-gui osmosis-gui-linux-x86_64
           chmod +x osmosis-linux-x86_64 osmosis-gui-linux-x86_64
+
+      # glibc ceiling: fail before upload/publish if either binary requires a
+      # GLIBC newer than 2.35 (the ubuntu-22.04 runner's glibc).
+      - name: Check glibc ceiling (max GLIBC_2.35)
+        run: |
+          CEILING=2.35
+          for bin in osmosis-linux-x86_64 osmosis-gui-linux-x86_64; do
+            max=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1 | cut -d_ -f2)
+            echo "$bin requires max GLIBC_$max"
+            if [ "$(printf '%s\n%s\n' "$CEILING" "$max" | sort -V | tail -1)" != "$CEILING" ]; then
+              echo "ERROR: $bin requires GLIBC_$max > GLIBC_$CEILING" >&2
+              exit 1
+            fi
+          done
 
       - name: Upload CLI binary
         uses: actions/upload-artifact@v4
