@@ -33,7 +33,17 @@ const WINE_GE_RELEASES_URL: &str = "https://github.com/GloriousEggroll/wine-ge-c
 
 const OPENCODE_DEB_JSON: &str = r#"{"tag_name":"v0.5.0","assets":[{"name":"opencode-desktop_0.5.0_amd64.deb","browser_download_url":"https://example.invalid/opencode.deb"}]}"#;
 const OPENCODE_APPIMAGE_JSON: &str = r#"{"tag_name":"v0.5.0","assets":[{"name":"opencode-desktop_0.5.0_amd64.AppImage","browser_download_url":"https://example.invalid/opencode.AppImage"}]}"#;
-const WINE_GE_JSON: &str = r#"{"tag_name":"GE-Proton8-26","assets":[{"name":"wine-lutris-ge-8-26-x86_64.tar.xz","browser_download_url":"https://example.invalid/wine-ge.tar.xz"}]}"#;
+const WINE_GE_JSON: &str = r#"{"tag_name":"GE-Proton8-26","assets":[{"name":"wine-lutris-GE-Proton8-26-x86_64.tar.xz","browser_download_url":"https://example.invalid/wine-ge.tar.xz"}]}"#;
+
+/// The privileged apt argv prefix every state-changing apt call must use:
+/// `sudo` strips the caller's env, so DEBIAN_FRONTEND goes through `env`.
+const SUDO_APT: [&str; 5] = [
+    "sudo",
+    "env",
+    "DEBIAN_FRONTEND=noninteractive",
+    "apt-get",
+    "install",
+];
 
 /// What the fake machine "has" before setup runs. `run` commands mutate it the
 /// way a real install would, so detect/verify behave like a live system.
@@ -187,24 +197,37 @@ fn respond(w: &mut World, a: &[&str]) -> CommandOutput {
     }
 
     // ---- apt ------------------------------------------------------------
-    if eq(a, &["sudo", "apt-get", "update"]) {
-        return if w.apt_update_ok {
-            CommandOutput::ok("")
-        } else {
-            CommandOutput::fail(100, "E: Could not get lock /var/lib/apt/lists/lock")
-        };
+    if a.starts_with(&["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get"]) {
+        if a.get(4) == Some(&"update") {
+            return if w.apt_update_ok {
+                CommandOutput::ok("")
+            } else {
+                CommandOutput::fail(100, "E: Could not get lock /var/lib/apt/lists/lock")
+            };
+        }
+        if a.get(4) == Some(&"install") {
+            if !w.apt_install_ok {
+                return CommandOutput::fail(100, "E: Unable to install packages");
+            }
+            if a.contains(&"mint-meta-codecs") && !w.mint_codecs_ok {
+                return CommandOutput::fail(100, "E: Unable to locate package mint-meta-codecs");
+            }
+            for arg in a.iter().skip(6) {
+                install_arg(w, arg);
+            }
+            return CommandOutput::ok("");
+        }
+        return CommandOutput::fail(127, format!("fake runner: unhandled sudo apt argv {:?}", a));
     }
-    if a.starts_with(&["sudo", "apt-get", "install", "-y"]) {
-        if !w.apt_install_ok {
-            return CommandOutput::fail(100, "E: Unable to install packages");
-        }
-        if a.contains(&"mint-meta-codecs") && !w.mint_codecs_ok {
-            return CommandOutput::fail(100, "E: Unable to locate package mint-meta-codecs");
-        }
-        for arg in a.iter().skip(4) {
-            install_arg(w, arg);
-        }
-        return CommandOutput::ok("");
+    // a bare `sudo apt-get ...` (no env passthrough) must never be produced
+    if a.first() == Some(&"sudo") && (a.get(1) == Some(&"apt-get") || a.get(1) == Some(&"dpkg")) {
+        return CommandOutput::fail(
+            127,
+            format!(
+                "REGRESSION: bare sudo apt/dpkg without env passthrough: {:?}",
+                a
+            ),
+        );
     }
     if a.starts_with(&["sudo", "install", "-m"]) {
         return CommandOutput::ok("");
@@ -264,6 +287,9 @@ fn respond(w: &mut World, a: &[&str]) -> CommandOutput {
                 "node --version" => ver(w.node, "v20.11.0"),
                 "npm --version" => ver(w.npm, "10.2.4"),
                 "pnpm --version" => ver(w.pnpm, "8.15.1"),
+                "rustc --version" => ver(w.rustc, "rustc 1.75.0 (82e1608df 2023-12-21)"),
+                "cargo --version" => ver(w.cargo, "cargo 1.75.0 (1d8b05cdd 2023-11-20)"),
+                "opencode --version" => ver(w.opencode, "1.0.0"),
                 other => CommandOutput::fail(127, format!("bash: {}: command not found", other)),
             };
         }
@@ -543,11 +569,26 @@ fn base_step_runs_the_exact_apt_argv_when_git_is_missing() {
     let (fake, out) = run(&fx, w, false);
 
     assert_eq!(step(&out.report, "base").status, "done");
-    assert!(fake.ran(&["sudo", "apt-get", "update"]));
-    let mut expected: Vec<&str> = vec!["sudo", "apt-get", "install", "-y"];
+    assert!(fake.ran(&[
+        "sudo",
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "update"
+    ]));
+    let mut expected: Vec<&str> = SUDO_APT.to_vec();
+    expected.push("-y");
     expected.extend_from_slice(&APT_BASE);
     assert!(fake.ran(&expected), "expected {:?}", expected);
-    assert!(fake.ran(&["sudo", "apt-get", "install", "-y", "mint-meta-codecs"]));
+    assert!(fake.ran(&[
+        "sudo",
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "install",
+        "-y",
+        "mint-meta-codecs"
+    ]));
     assert_eq!(out.exit_code, 0);
 }
 
@@ -561,9 +602,19 @@ fn base_step_falls_back_to_ubuntu_restricted_extras() {
     let (fake, out) = run(&fx, w, false);
 
     assert_eq!(step(&out.report, "base").status, "done");
-    assert!(fake.ran(&["sudo", "apt-get", "install", "-y", "mint-meta-codecs"]));
     assert!(fake.ran(&[
         "sudo",
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "install",
+        "-y",
+        "mint-meta-codecs"
+    ]));
+    assert!(fake.ran(&[
+        "sudo",
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
         "apt-get",
         "install",
         "-y",
@@ -615,7 +666,15 @@ fn nvidia_falls_back_to_recommended_driver_package() {
     let (fake, out) = run(&fx, w, false);
 
     assert_eq!(step(&out.report, "nvidia").status, "done");
-    assert!(fake.ran(&["sudo", "apt-get", "install", "-y", "nvidia-driver-550"]));
+    assert!(fake.ran(&[
+        "sudo",
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "install",
+        "-y",
+        "nvidia-driver-550"
+    ]));
     assert!(out.report.reboot_required);
 }
 
@@ -646,8 +705,22 @@ fn gh_installs_from_the_official_apt_repo() {
         GH_KEYRING_URL
     ]));
     assert!(fake.ran_any(&["sudo", "install", "-m", "0644",]));
-    assert!(fake.ran(&["sudo", "apt-get", "update"]));
-    assert!(fake.ran(&["sudo", "apt-get", "install", "-y", "gh"]));
+    assert!(fake.ran(&[
+        "sudo",
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "update"
+    ]));
+    assert!(fake.ran(&[
+        "sudo",
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "install",
+        "-y",
+        "gh"
+    ]));
 
     let dl = r
         .downloads
@@ -740,7 +813,14 @@ fn vscode_and_chrome_skip_independently_when_versions_parse() {
 
     assert_eq!(step(&out.report, "vscode").status, "skipped-already");
     assert_eq!(step(&out.report, "chrome").status, "skipped-already");
-    assert!(!fake.ran_any(&["sudo", "apt-get", "install", "-y"]));
+    assert!(!fake.ran_any(&[
+        "sudo",
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "install",
+        "-y"
+    ]));
 
     let mut w = World::everything();
     w.code = false;
@@ -842,7 +922,16 @@ fn lutris_installs_and_extracts_wine_ge() {
     let r = &out.report;
 
     assert_eq!(step(r, "lutris").status, "done");
-    assert!(fake.ran(&["sudo", "apt-get", "install", "-y", "lutris", "winetricks"]));
+    assert!(fake.ran(&[
+        "sudo",
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "install",
+        "-y",
+        "lutris",
+        "winetricks"
+    ]));
     assert!(fake.ran_any(&["tar", "-xf"]));
     assert!(r
         .downloads
@@ -867,4 +956,68 @@ fn followups_match_the_steps_that_ran() {
     assert!(has("Telegram/Firefox"));
     // no GPU in this world, so no reboot line
     assert!(!has("REBOOT required"));
+}
+
+// ------------------------------------------------- 6.1.1 / 6.1.5 regressions --
+
+#[test]
+fn every_sudo_apt_or_dpkg_argv_passes_debian_frontend_through_env() {
+    // World::nothing() forces every applicable step to run its privileged
+    // commands, so the recorded argv is the full set of sudo apt calls.
+    let fx = Fixture::new();
+    let (fake, _) = run(&fx, World::nothing(), false);
+
+    let mut privileged_apt_calls = 0;
+    for c in fake.calls() {
+        if c.first().map(String::as_str) != Some("sudo") {
+            continue;
+        }
+        match c.get(1).map(String::as_str) {
+            // bare `sudo apt-get ...` / `sudo dpkg ...`: sudo strips the
+            // caller's env, so apt never sees DEBIAN_FRONTEND -> regression
+            Some("apt-get") | Some("dpkg") => {
+                panic!("bare sudo {:?} without env passthrough: {:?}", c[1], c)
+            }
+            Some("env") => {
+                assert_eq!(
+                    c.get(2).map(String::as_str),
+                    Some("DEBIAN_FRONTEND=noninteractive")
+                );
+                match c.get(3).map(String::as_str) {
+                    Some("apt-get") | Some("dpkg") => privileged_apt_calls += 1,
+                    other => panic!(
+                        "sudo env used for a non-apt/dpkg program: {:?} ({:?})",
+                        other, c
+                    ),
+                }
+            }
+            _ => {} // sudo install / sudo ubuntu-drivers are not apt/dpkg
+        }
+    }
+    assert!(
+        privileged_apt_calls > 0,
+        "the run must have issued at least one privileged apt call"
+    );
+}
+
+#[test]
+fn rust_and_opencode_verify_run_through_a_login_shell() {
+    let fx = all_present_fixture();
+    let mut w = World::everything();
+    w.rustc = false;
+    w.cargo = false;
+    w.opencode = false;
+
+    let (fake, out) = run(&fx, w, false);
+    let r = &out.report;
+
+    assert_eq!(step(r, "rust").status, "done");
+    assert_eq!(step(r, "opencode").status, "done");
+    // verify must go through `bash -lc` so a stale PATH in the launching
+    // terminal cannot produce a false "did not parse" failure
+    assert!(fake.ran(&["bash", "-lc", "rustc --version"]));
+    assert!(fake.ran(&["bash", "-lc", "cargo --version"]));
+    assert!(fake.ran(&["bash", "-lc", "opencode --version"]));
+    // node verify already used the login-shell form
+    assert!(fake.ran(&["bash", "-lc", "node --version"]));
 }

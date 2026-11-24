@@ -101,12 +101,29 @@ fn respond(w: &mut World, a: &[&str]) -> CommandOutput {
             a.get(1).copied().unwrap_or("")
         ));
     }
-    if a.starts_with(&["sudo", "apt-get", "install", "-y", "openjdk-21-jre"]) {
+    if a.starts_with(&[
+        "sudo",
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "install",
+        "-y",
+        "openjdk-21-jre",
+    ]) {
         return if w.apt_ok {
             CommandOutput::ok("")
         } else {
             CommandOutput::fail(100, "E: unable to install")
         };
+    }
+    if a.first() == Some(&"sudo") && (a.get(1) == Some(&"apt-get") || a.get(1) == Some(&"dpkg")) {
+        return CommandOutput::fail(
+            127,
+            format!(
+                "REGRESSION: bare sudo apt/dpkg without env passthrough: {:?}",
+                a
+            ),
+        );
     }
     CommandOutput::fail(127, format!("fake runner: unhandled argv {:?}", a))
 }
@@ -556,14 +573,16 @@ fn registration_writes_yaml_and_exactly_one_row_per_game() {
         assert_eq!(row.platform, "Windows");
         assert_eq!(row.runner, "wine");
         assert_eq!(row.installed, 1);
-        assert!(row.configpath.ends_with("-osmosis.yml"));
+        // Lutris appends .yml itself when resolving configpath
+        assert!(row.configpath.ends_with("-osmosis"));
+        assert!(!row.configpath.ends_with(".yml"));
         assert!(Path::new(&row.exe).is_absolute());
         assert!(Path::new(&row.dir).is_absolute());
     }
     let fifa = rows.iter().find(|r| r.slug == "fifa-22-osmosis").unwrap();
     assert_eq!(fifa.name, "FIFA 22");
     assert!(fifa.exe.replace('\\', "/").ends_with("FIFA 22/FIFA22.exe"));
-    assert_eq!(fifa.configpath, "fifa-22-osmosis.yml");
+    assert_eq!(fifa.configpath, "fifa-22-osmosis");
 
     let yaml = fx.home().join(".config/lutris/games/fifa-22-osmosis.yml");
     let text = fs::read_to_string(&yaml).unwrap();
@@ -729,7 +748,15 @@ fn minecraft_writes_a_desktop_entry_and_skips_apt_when_java_exists() {
     let mc = game(&out.report, "minecraft");
 
     assert_eq!(mc.status, "ready");
-    assert!(!fake.ran(&["sudo", "apt-get", "install", "-y", "openjdk-21-jre"]));
+    assert!(!fake.ran(&[
+        "sudo",
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "install",
+        "-y",
+        "openjdk-21-jre"
+    ]));
 
     let jar = fx.home().join("Games/minecraft/TLauncher.jar");
     assert!(jar.is_file());
@@ -764,7 +791,15 @@ fn minecraft_installs_java_when_it_is_missing() {
     w.java = false;
     let (fake, out) = run(&fx, w, false);
 
-    assert!(fake.ran(&["sudo", "apt-get", "install", "-y", "openjdk-21-jre"]));
+    assert!(fake.ran(&[
+        "sudo",
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "install",
+        "-y",
+        "openjdk-21-jre"
+    ]));
     assert_eq!(game(&out.report, "minecraft").status, "ready");
     assert!(game(&out.report, "minecraft")
         .detail
@@ -810,7 +845,15 @@ fn dry_run_creates_no_prefixes_rows_or_downloads() {
     assert_eq!(fake.count_containing("wineboot"), 0);
     assert_eq!(fake.count_containing("winetricks"), 0);
     assert_eq!(fake.count_containing("curl"), 0);
-    assert!(!fake.ran(&["sudo", "apt-get", "install", "-y", "openjdk-21-jre"]));
+    assert!(!fake.ran(&[
+        "sudo",
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "install",
+        "-y",
+        "openjdk-21-jre"
+    ]));
 
     // the plan itself is written
     assert!(fx.home().join("osmosis-setup/games-report.json").is_file());
@@ -885,4 +928,86 @@ fn games_refuses_on_non_linux() {
     let err = osmosis::games::run_games(&fx.drive(), &fx.home(), true)
         .expect_err("games must refuse on non-Linux hosts");
     assert!(err.contains("Linux-only"), "{}", err);
+}
+
+// ------------------------------------------------- 6.1.1 / 6.1.4 regressions --
+
+#[test]
+fn openjdk_install_passes_debian_frontend_through_sudo_env() {
+    let fx = standard_fixture();
+    let mut w = World::good();
+    w.java = false;
+    let (fake, _) = run(&fx, w, false);
+
+    for c in fake.calls() {
+        if c.first().map(String::as_str) == Some("sudo")
+            && (c.get(1).map(String::as_str) == Some("apt-get")
+                || c.get(1).map(String::as_str) == Some("dpkg"))
+        {
+            panic!("bare sudo apt/dpkg without env passthrough: {:?}", c);
+        }
+    }
+    assert!(fake.ran(&[
+        "sudo",
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "install",
+        "-y",
+        "openjdk-21-jre"
+    ]));
+}
+
+#[test]
+fn registered_row_stores_configpath_without_extension_and_yaml_carries_the_game_section() {
+    let fx = standard_fixture();
+    let (_, out) = run(&fx, World::good(), false);
+    assert_eq!(out.exit_code, 0);
+
+    // read the pga.db row back and assert the stored fields
+    let rows = read_rows(&fx.db());
+    let fifa = rows
+        .iter()
+        .find(|r| r.slug == "fifa-22-osmosis")
+        .expect("fifa row must exist");
+    assert_eq!(fifa.name, "FIFA 22");
+    assert_eq!(fifa.slug, "fifa-22-osmosis");
+    assert_eq!(fifa.platform, "Windows");
+    assert_eq!(fifa.runner, "wine");
+    assert_eq!(fifa.installed, 1);
+    assert!(fifa.exe.replace('\\', "/").ends_with("FIFA 22/FIFA22.exe"));
+    assert!(fifa.dir.replace('\\', "/").ends_with("FIFA 22"));
+    // Lutris appends ".yml" itself: configpath must NOT carry the extension
+    assert_eq!(fifa.configpath, "fifa-22-osmosis");
+
+    // the YAML file on disk keeps the .yml name
+    let yaml_path = fx.home().join(".config/lutris/games/fifa-22-osmosis.yml");
+    assert!(
+        yaml_path.is_file(),
+        "YAML file must be named <slug>-osmosis.yml"
+    );
+    let text = fs::read_to_string(&yaml_path).unwrap();
+
+    // parse the generated YAML back structurally: exe/prefix/arch exist only
+    // inside the nested game: section, and match the row where applicable
+    for line in text.lines() {
+        assert!(
+            !line.starts_with("exe:") && !line.starts_with("prefix:") && !line.starts_with("arch:"),
+            "top-level exe/prefix/arch (Lutris ignores it): {:?}\n{}",
+            line,
+            text
+        );
+    }
+    assert!(text.contains("game:\n"));
+    assert!(text.contains(&format!("  exe: '{}'\n", fifa.exe)));
+    let prefix = fx
+        .home()
+        .join(".local/share/osmosis/prefixes/fifa-22")
+        .to_string_lossy()
+        .into_owned();
+    assert!(text.contains(&format!("  prefix: '{}'\n  arch: win64\n", prefix)));
+    assert!(
+        text.starts_with("name: 'FIFA 22'\ngame_slug: 'fifa-22-osmosis'\nrunner: wine\ngame:\n")
+    );
+    assert!(text.contains("\nwine:\n  version: 'wine-9.0'\n  dxvk: true\n  esync: true\n"));
 }

@@ -2,93 +2,126 @@
 
 **Move from Windows to Linux, without losing anything.**
 
-OSmosis is an open-source (GPL-3.0) Windows-to-Linux migration tool written in Rust.
-It helps a user move **all** their files from Windows to Linux Mint Cinnamon, then
-turn that fresh install into a working machine:
+OSmosis is an open-source (GPL-3.0) tool written in Rust that walks you through
+the whole switch: it scans your Windows profile, copies what matters to an
+external drive (hash-verified), restores it onto a fresh Linux Mint install,
+turns that install into your working machine, and registers your standalone
+games in Lutris so they are ready to click.
 
-1. **Scanner (Windows side)** — walks the user profile, classifies every file
-   (KEEP / RECREATE / SKIP), hashes keepers, detects git repos, and writes a
-   `manifest.json` + human-readable `report.txt`.
-2. **Stager** — hash-verified, resumable copy of the keepers to the external drive.
-3. **Importer (Linux side)** — restores them to the right places with a permission plan.
-4. **Setup (Linux side)** — idempotent step runner: apt base + codecs, NVIDIA driver,
-   GitHub CLI, nvm/pnpm, rustup, VS Code, Chrome, OpenCode, Lutris + Wine-GE.
-5. **Games (Linux side)** — finds the standalone games on the external drive, builds
-   one Wine prefix per game, installs its winetricks requirements, and registers
-   ready-to-click entries in Lutris. The games drive is read-only.
+## Download
 
-Status: Slices 1–5 implemented
+Grab the prebuilt binaries from the
+[GitHub Releases page](https://github.com/mateir0/osmosis/releases) (the
+`latest` prerelease, rebuilt from `master` on every push):
 
-## What Slice 1 does
+- **Windows** (for the scan + stage steps): `osmosis-windows-x86_64.exe`
+- **Linux** (for the import + setup + games steps): `osmosis-linux-x86_64`
 
-The scanner is **read-only and safe above everything**: it reads files and writes
-**only** its own output files (`manifest.json`, `report.txt`) inside the `--out`
-directory. It never deletes, moves, renames, or modifies anything else, makes no
-network calls, and never requires elevation.
+Or build from source with `cargo build --release` (see Development below).
 
-Classification precedence (per file):
+## The journey
 
-1. Explicit KEEP mappings (e.g. `Documents` -> `~/Documents`, `.ssh` -> `~/.ssh`).
-2. RECREATE directory matches (`node_modules`, `.next`, `target`, ...) — pruned as
-   one aggregate entry, never descended into.
-3. SKIP rules (everything under `AppData` except the explicit KEEP mapping,
-   `NTUSER.DAT*`, `ntuser.ini`, `Thumbs.db`, `desktop.ini`, `*.tmp`, `*.sys`).
-4. Default: KEEP only if under a mapped top-level folder, otherwise SKIP.
+Six steps, in order. The first two run on Windows, the last four on the fresh
+Linux Mint machine.
 
-Git repos (any directory containing `.git`) are recorded with branch, dirty file
-count, and unpushed-commit count. KEEP files up to 256 MB are hashed with xxh64.
-
-## How to run the scanner
+### 1. Scan (Windows)
 
 ```powershell
-# scan the current user's profile (default --root = %USERPROFILE%)
-cargo run --release -- scan
-
-# explicit options
-cargo run --release -- scan --root C:\Users\You --out ./osmosis-output --staging E:\ --config config.example.toml
+osmosis-windows-x86_64.exe scan
+osmosis-windows-x86_64.exe scan --root C:\Users\You --out ./osmosis-output --staging E:\ --config config.example.toml
 ```
 
-CLI shape:
+Walks the user profile (default `--root` = `%USERPROFILE%`), classifies every
+file (KEEP / RECREATE / SKIP), hashes the keepers with xxh64, detects git repos,
+and writes `manifest.json` + a human-readable `report.txt` into `--out` (default
+`./osmosis-output`). With `--staging`, the report adds a fit check against the
+external drive's free space. Classification is: explicit KEEP mappings first
+(e.g. `Documents` -> `~/Documents`, `.ssh` -> `~/.ssh`), then RECREATE directory
+matches (`node_modules`, `target`, ...), then SKIP rules (most of `AppData`,
+`Thumbs.db`, `*.tmp`, ...), and otherwise KEEP only inside mapped top-level
+folders.
 
+### 2. Stage to the external drive (Windows)
+
+```powershell
+osmosis-windows-x86_64.exe stage --manifest .\osmosis-output\manifest.json --staging E:\
 ```
-osmosis scan [--root <dir>] [--config <file>] [--out <dir>] [--staging <path>]
-```
 
-- `--root` — directory to scan. Defaults to the `USERPROFILE` environment variable;
-  the command errors out clearly if neither is available.
-- `--config` — optional TOML config overriding the embedded defaults
-  (see `config.example.toml`).
-- `--out` — output directory (default `./osmosis-output`). The only place the
-  program ever writes: `manifest.json` and `report.txt`.
-- `--staging` — optional path on the external drive; when given, the report adds a
-  fit check ("Keepers: X GB / Staging free: Y GB -> FITS / DOES NOT FIT").
+Copies every keeper to `<staging>/osmosis-stage/`, hash-verifying each file as
+it goes, and is resumable — re-running skips what is already staged and correct.
 
-## How to run setup (Linux)
+### 3. Install Linux Mint
+
+This is the one step OSmosis cannot do for you: create a Linux Mint Cinnamon
+USB installer and install it on the target machine, replacing Windows. OSmosis
+never repartitions or touches your disks.
+
+### 4. Import (Linux)
 
 ```bash
-# plan only: prints every step, changes nothing
-cargo run --release -- setup --dry-run
-
-# real run on the fresh Mint machine (no sudo up front; escalates per command)
-cargo run --release -- setup
+osmosis-linux-x86_64 import --stage /media/<user>/<drive>/osmosis-stage --dry-run
+osmosis-linux-x86_64 import --stage /media/<user>/<drive>/osmosis-stage
 ```
 
-Report: `~/osmosis-setup/setup-report.{json,txt}`.
+Unpacks the staged tree into your home directory (`--home`, default `$HOME`),
+hash-verifying every file again, applies a permission plan, and writes an import
+receipt + report. `--dry-run` prints the plan (to place / already present /
+conflicts) and writes nothing.
 
-## How to run games (Linux)
+### 5. Setup (Linux)
 
 ```bash
-# discover the games on the mounted drive and print the plan
-cargo run --release -- games --games-root /media/<user>/<drive> --dry-run
-
-# build prefixes, install requirements, register in Lutris
-cargo run --release -- games --games-root /media/<user>/<drive>
+osmosis-linux-x86_64 setup --dry-run
+osmosis-linux-x86_64 setup
 ```
 
-Report: `~/osmosis-setup/games-report.{json,txt}`. Prefixes live in
-`~/.local/share/osmosis/prefixes/<slug>`; Lutris entries are
-`~/.config/lutris/games/<slug>-osmosis.yml` plus rows in `pga.db` whose slug ends
-in `-osmosis`. Nothing is ever written to the games drive.
+Idempotent step runner that turns the fresh install into the working machine:
+base apt packages + codecs, NVIDIA driver (when a GPU is present), GitHub CLI,
+Node via nvm + pnpm, Rust via rustup, VS Code, Google Chrome, OpenCode, and
+Lutris + Wine-GE. Runs unprivileged and escalates per command with `sudo`
+(`DEBIAN_FRONTEND=noninteractive` is passed through so nothing can block on an
+interactive prompt). `--dry-run` prints the plan (would-run / already-done /
+not-applicable) and changes nothing. Report:
+`~/osmosis-setup/setup-report.{json,txt}`.
+
+### 6. Games (Linux)
+
+```bash
+osmosis-linux-x86_64 games --games-root /media/<user>/<drive> --dry-run
+osmosis-linux-x86_64 games --games-root /media/<user>/<drive>
+```
+
+Finds the standalone games on the mounted external drive, builds one Wine
+prefix per game under `~/.local/share/osmosis/prefixes/<slug>`, installs each
+game's winetricks requirements, and registers ready-to-click entries in Lutris
+(`~/.config/lutris/games/<slug>-osmosis.yml` plus a row in `pga.db`). `--dry-run`
+discovers and prints the plan only. Report: `~/osmosis-setup/games-report.{json,txt}`.
+
+## Safety promises
+
+These are enforced in the code, not just promised:
+
+- **The scanner is read-only.** It writes only its own output files
+  (`manifest.json`, `report.txt`) inside `--out`. It never deletes, moves,
+  renames, or modifies anything else, makes no network calls, and never
+  requires elevation.
+- **The stager hash-verifies every file** it copies (xxh64 from the manifest).
+- **The importer never overwrites conflicts.** A target that already exists
+  with different content is recorded as a conflict and left untouched.
+- **Setup never reboots on its own.** A required reboot (NVIDIA driver) is only
+  flagged in the report and the manual follow-ups list.
+- **The games drive is read-only.** Nothing is ever written to it; prefixes,
+  Lutris configs, and `pga.db` all live on the home drive.
+
+## Status and honest limitations
+
+OSmosis was built and proven on **one real Windows -> Linux Mint Cinnamon
+switch** (65,288 files imported and hash-verified, games playable in Lutris).
+The target distribution is Linux Mint Cinnamon; other distros are untested.
+The games step ships a fixed built-in table of 5 games and is the most
+personal, least general part of the tool — extending it to arbitrary games is
+future work. There is no GUI yet (see `docs/UI_PLAN.md` for the plan), no
+dual-boot support, and no automatic partitioning.
 
 ## Development
 

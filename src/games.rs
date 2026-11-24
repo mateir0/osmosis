@@ -439,8 +439,10 @@ fn yaml_quote(s: &str) -> String {
 }
 
 fn render_yaml(def: &GameDef, exe: &Path, prefix: &Path, runner_name: &str) -> String {
+    // Lutris reads exe/prefix/arch from the nested `game:` section; at the top
+    // level they are ignored and the entry shows "no executable set".
     format!(
-        "name: {name}\ngame_slug: {slug}\nrunner: wine\nexe: {exe}\nprefix: {prefix}\narch: win64\nwine:\n  version: {version}\n  dxvk: true\n  esync: true\n",
+        "name: {name}\ngame_slug: {slug}\nrunner: wine\ngame:\n  exe: {exe}\n  prefix: {prefix}\n  arch: win64\nwine:\n  version: {version}\n  dxvk: true\n  esync: true\n",
         name = yaml_quote(def.name),
         slug = yaml_quote(&format!("{}{}", def.slug, SLUG_SUFFIX)),
         exe = yaml_quote(&exe.to_string_lossy()),
@@ -535,6 +537,10 @@ fn register(
     prefix: &Path,
 ) -> Result<Reg, String> {
     let file = format!("{}{}.yml", def.slug, SLUG_SUFFIX);
+    // Lutris appends ".yml" itself when resolving `configpath`, so the value
+    // stored in pga.db must NOT carry the extension (else it looks for
+    // "<slug>-osmosis.yml.yml" and launches an empty config).
+    let config = format!("{}{}", def.slug, SLUG_SUFFIX);
     let games_dir = ctx.home.join(LUTRIS_GAMES_DIR);
     fs::create_dir_all(&games_dir)
         .map_err(|e| format!("cannot create {}: {}", games_dir.display(), e))?;
@@ -550,7 +556,7 @@ fn register(
             "Lutris pga.db not found (Lutris has never been launched)".to_string(),
         ));
     }
-    match write_pga_row(&db, def, exe, folder, &file) {
+    match write_pga_row(&db, def, exe, folder, &config) {
         Ok(()) => Ok(Reg::Registered),
         Err(PgaError::Refused(msg)) => {
             ctx.registration_deferred = true;
@@ -850,7 +856,11 @@ fn process_minecraft(r: &dyn Runner, ctx: &mut Ctx, def: &GameDef, dry_run: bool
     }
 
     if java.is_none() {
-        if let Err(e) = r.run(&["sudo", "apt-get", "install", "-y", "openjdk-21-jre"]) {
+        if let Err(e) = r.run(&crate::setup::sudo_apt_get(&[
+            "install",
+            "-y",
+            "openjdk-21-jre",
+        ])) {
             return game_report(
                 def,
                 ctx,
@@ -1312,13 +1322,48 @@ mod tests {
             "name: 'FIFA 22'",
             "game_slug: 'fifa-22-osmosis'",
             "runner: wine",
-            "exe: '/media/x/FIFA 22/FIFA22.exe'",
-            "arch: win64",
-            "version: 'GE-Proton8-26'",
+            "  arch: win64",
+            "  version: 'GE-Proton8-26'",
             "dxvk: true",
             "esync: true",
         ] {
             assert!(yaml.contains(needle), "missing {:?} in\n{}", needle, yaml);
         }
+    }
+
+    #[test]
+    fn rendered_yaml_nests_exe_prefix_arch_under_the_game_section() {
+        let def = &games_table()[0];
+        let exe = Path::new("/media/x/FIFA 22/FIFA22.exe");
+        let prefix = Path::new("/home/u/.local/share/osmosis/prefixes/fifa-22");
+        let yaml = render_yaml(def, exe, prefix, "GE-Proton8-26");
+
+        // parse the rendered YAML back line by line (no YAML crate in the
+        // dependency tree): exe/prefix/arch must live ONLY inside game:
+        for line in yaml.lines() {
+            assert!(
+                !line.starts_with("exe:")
+                    && !line.starts_with("prefix:")
+                    && !line.starts_with("arch:"),
+                "top-level exe/prefix/arch line (Lutris ignores it): {:?}\n{}",
+                line,
+                yaml
+            );
+        }
+        let game_block = format!(
+            "game:\n  exe: {}\n  prefix: {}\n  arch: win64\n",
+            yaml_quote(&exe.to_string_lossy()),
+            yaml_quote(&prefix.to_string_lossy())
+        );
+        assert!(
+            yaml.contains(&game_block),
+            "missing game section {:?} in\n{}",
+            game_block,
+            yaml
+        );
+        // the surrounding top-level shape is unchanged
+        assert!(yaml
+            .starts_with("name: 'FIFA 22'\ngame_slug: 'fifa-22-osmosis'\nrunner: wine\ngame:\n"));
+        assert!(yaml.contains("\nwine:\n  version: 'GE-Proton8-26'\n  dxvk: true\n  esync: true\n"));
     }
 }

@@ -16,6 +16,21 @@ use std::process::Command;
 
 pub const SETUP_DIR_NAME: &str = "osmosis-setup";
 
+/// Prefix of every privileged apt/dpkg argv. `sudo` strips the caller's
+/// environment, so `DEBIAN_FRONTEND=noninteractive` must be passed through
+/// `env` explicitly — otherwise apt-get and .deb postinst scripts (e.g. the
+/// VS Code Microsoft-repo prompt) never see it and can hang a non-interactive
+/// run (observed live on 2026-11-20).
+pub const SUDO_APT_PREFIX: &[&str] = &["sudo", "env", "DEBIAN_FRONTEND=noninteractive"];
+
+/// `sudo env DEBIAN_FRONTEND=noninteractive apt-get <args...>` as a fixed argv.
+pub fn sudo_apt_get<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut v = SUDO_APT_PREFIX.to_vec();
+    v.push("apt-get");
+    v.extend_from_slice(args);
+    v
+}
+
 const APT_BASE_PACKAGES: &[&str] = &[
     "git",
     "curl",
@@ -388,6 +403,15 @@ fn sanitize_name(name: &str) -> String {
         .collect()
 }
 
+/// Case-insensitive match for the Wine-GE Lutris release asset. The real
+/// releases ship mixed-case names, e.g.
+/// `wine-lutris-GE-Proton8-26-x86_64.tar.xz` (GE-Proton8-26), so the comparison
+/// runs on a lowercased copy of the asset name.
+fn is_wine_ge_tarball(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("wine-lutris-ge") && lower.ends_with(".tar.xz")
+}
+
 #[cfg(unix)]
 fn set_executable(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -507,20 +531,18 @@ fn parse_recommended_driver(text: &str) -> Option<String> {
 fn run_step(kind: StepKind, r: &dyn Runner, ctx: &mut Ctx) -> Result<RunNote, String> {
     match kind {
         StepKind::Base => {
-            r.run(&["sudo", "apt-get", "update"])?;
-            let mut argv: Vec<&str> = vec!["sudo", "apt-get", "install", "-y"];
+            r.run(&sudo_apt_get(&["update"]))?;
+            let mut argv = sudo_apt_get(&["install", "-y"]);
             argv.extend_from_slice(APT_BASE_PACKAGES);
             r.run(&argv)?;
-            if r.run(&["sudo", "apt-get", "install", "-y", "mint-meta-codecs"])
+            if r.run(&sudo_apt_get(&["install", "-y", "mint-meta-codecs"]))
                 .is_err()
             {
-                r.run(&[
-                    "sudo",
-                    "apt-get",
+                r.run(&sudo_apt_get(&[
                     "install",
                     "-y",
                     "ubuntu-restricted-extras",
-                ])?;
+                ]))?;
             }
             Ok(RunNote::new("base packages installed"))
         }
@@ -550,7 +572,7 @@ fn run_step(kind: StepKind, r: &dyn Runner, ctx: &mut Ctx) -> Result<RunNote, St
                     "cannot determine the recommended NVIDIA driver from ubuntu-drivers devices"
                         .to_string()
                 })?;
-                r.run(&["sudo", "apt-get", "install", "-y", &driver])?;
+                r.run(&sudo_apt_get(&["install", "-y", &driver]))?;
             }
             let mut note = RunNote::new("NVIDIA driver installed");
             note.reboot = true;
@@ -580,8 +602,8 @@ fn run_step(kind: StepKind, r: &dyn Runner, ctx: &mut Ctx) -> Result<RunNote, St
                 &s,
                 "/etc/apt/sources.list.d/github-cli.list",
             ])?;
-            r.run(&["sudo", "apt-get", "update"])?;
-            r.run(&["sudo", "apt-get", "install", "-y", "gh"])?;
+            r.run(&sudo_apt_get(&["update"]))?;
+            r.run(&sudo_apt_get(&["install", "-y", "gh"]))?;
             Ok(RunNote::new(
                 "GitHub CLI installed from the official apt repo",
             ))
@@ -608,14 +630,14 @@ fn run_step(kind: StepKind, r: &dyn Runner, ctx: &mut Ctx) -> Result<RunNote, St
             let deb = ctx.work.join("vscode.deb");
             fetch(r, ctx, "vscode", VSCODE_URL, &deb)?;
             let p = deb.to_string_lossy().into_owned();
-            r.run(&["sudo", "apt-get", "install", "-y", &p])?;
+            r.run(&sudo_apt_get(&["install", "-y", &p]))?;
             Ok(RunNote::new("VS Code .deb installed"))
         }
         StepKind::Chrome => {
             let deb = ctx.work.join("google-chrome.deb");
             fetch(r, ctx, "chrome", CHROME_URL, &deb)?;
             let p = deb.to_string_lossy().into_owned();
-            r.run(&["sudo", "apt-get", "install", "-y", &p])?;
+            r.run(&sudo_apt_get(&["install", "-y", &p]))?;
             Ok(RunNote::new("Google Chrome .deb installed"))
         }
         StepKind::OpenCode => {
@@ -635,7 +657,7 @@ fn run_step(kind: StepKind, r: &dyn Runner, ctx: &mut Ctx) -> Result<RunNote, St
             Ok(note)
         }
         StepKind::Lutris => {
-            r.run(&["sudo", "apt-get", "install", "-y", "lutris", "winetricks"])?;
+            r.run(&sudo_apt_get(&["install", "-y", "lutris", "winetricks"]))?;
             let rel = resolve_release(r, LUTRIS_API).map_err(|e| {
                 format!(
                     "cannot resolve Wine-GE release: {} ({})",
@@ -645,7 +667,7 @@ fn run_step(kind: StepKind, r: &dyn Runner, ctx: &mut Ctx) -> Result<RunNote, St
             let asset = rel
                 .assets
                 .iter()
-                .find(|a| a.name.contains("wine-lutris-ge") && a.name.ends_with(".tar.xz"))
+                .find(|a| is_wine_ge_tarball(&a.name))
                 .ok_or_else(|| {
                     format!(
                         "no wine-lutris-ge .tar.xz asset in release {} ({})",
@@ -683,7 +705,7 @@ fn install_opencode_desktop(r: &dyn Runner, ctx: &mut Ctx) -> Result<(), String>
         let deb = ctx.work.join("opencode.deb");
         fetch(r, ctx, "opencode", &asset.browser_download_url, &deb)?;
         let p = deb.to_string_lossy().into_owned();
-        r.run(&["sudo", "apt-get", "install", "-y", &p])?;
+        r.run(&sudo_apt_get(&["install", "-y", &p]))?;
         return Ok(());
     }
     if let Some(asset) = rel.assets.iter().find(|a| a.name.ends_with(".AppImage")) {
@@ -746,9 +768,11 @@ fn verify_step(kind: StepKind, r: &dyn Runner, ctx: &Ctx) -> Result<String, Stri
             Ok(format!("node {}; npm {}; pnpm {}", node, npm, pnpm))
         }
         StepKind::Rust => {
-            let rustc = version_of(r, &["rustc", "--version"])
+            // via a login shell: the launching terminal's PATH may be stale
+            // (rustup installs into ~/.cargo/bin), a fresh shell re-reads it
+            let rustc = version_of(r, &["bash", "-lc", "rustc --version"])
                 .ok_or_else(|| "rustc --version did not parse".to_string())?;
-            let cargo = version_of(r, &["cargo", "--version"])
+            let cargo = version_of(r, &["bash", "-lc", "cargo --version"])
                 .ok_or_else(|| "cargo --version did not parse".to_string())?;
             Ok(format!("{}; {}", rustc, cargo))
         }
@@ -756,7 +780,7 @@ fn verify_step(kind: StepKind, r: &dyn Runner, ctx: &Ctx) -> Result<String, Stri
             .ok_or_else(|| "code --version did not parse".to_string()),
         StepKind::Chrome => version_of(r, &["google-chrome", "--version"])
             .ok_or_else(|| "google-chrome --version did not parse".to_string()),
-        StepKind::OpenCode => version_of(r, &["opencode", "--version"])
+        StepKind::OpenCode => version_of(r, &["bash", "-lc", "opencode --version"])
             .ok_or_else(|| "opencode --version did not parse".to_string()),
         StepKind::Lutris => {
             let v = version_of(r, &["lutris", "--version"])
@@ -1053,5 +1077,31 @@ driver   : nvidia-driver-535 - third-party non-free
         assert_eq!(sanitize_name("GE-Proton8-26"), "GE-Proton8-26");
         assert_eq!(sanitize_name("v8/26 beta"), "v8-26-beta");
         assert!(!sanitize_name("../etc").contains('/'));
+    }
+
+    #[test]
+    fn wine_ge_matcher_selects_the_real_release_asset_case_insensitively() {
+        // the exact asset name from the live GE-Proton8-26 release
+        assert!(is_wine_ge_tarball(
+            "wine-lutris-GE-Proton8-26-x86_64.tar.xz"
+        ));
+        // decoys must not match
+        assert!(!is_wine_ge_tarball(
+            "wine-lutris-GE-Proton8-26-x86_64.tar.zst"
+        ));
+        assert!(!is_wine_ge_tarball("lutris-0.5.17.tar.xz"));
+        assert!(!is_wine_ge_tarball("wine-ge-custom-8.tar.xz"));
+        // a selection over a mixed asset list picks only the real one
+        let assets = [
+            "wine-lutris-GE-Proton8-26-x86_64.tar.zst",
+            "some-other-tool.tar.xz",
+            "wine-lutris-GE-Proton8-26-x86_64.tar.xz",
+        ];
+        let picked: Vec<&str> = assets
+            .iter()
+            .copied()
+            .filter(|n| is_wine_ge_tarball(n))
+            .collect();
+        assert_eq!(picked, vec!["wine-lutris-GE-Proton8-26-x86_64.tar.xz"]);
     }
 }
